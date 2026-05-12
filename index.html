@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Canvas Tutor Agent</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <aside class="sidebar" aria-label="Study controls">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true">CT</div>
+          <div>
+            <h1>Canvas Tutor</h1>
+            <p>Study with notes, maps, quizzes, and guided help.</p>
+          </div>
+        </div>
+
+        <section class="panel canvas-connect">
+          <div class="panel-heading">
+            <h2>Connect Canvas LMS</h2>
+            <span id="canvas-status" class="connection-pill">Not connected</span>
+          </div>
+          <label for="canvas-url">School Canvas URL</label>
+          <input id="canvas-url" type="url" placeholder="https://school.instructure.com" autocomplete="url" />
+          <label for="canvas-token">Access token</label>
+          <input id="canvas-token" type="password" placeholder="Paste token for this session" autocomplete="off" />
+          <p class="helper-text">Your token is sent through the local proxy only for this request. Use the Node preview URL for Canvas login.</p>
+          <div class="connect-actions">
+            <button id="connect-canvas" class="primary-btn" type="button">Connect</button>
+            <button id="import-canvas" type="button" disabled>Import Work</button>
+          </div>
+        </section>
+
+        <section class="panel daily-mail">
+          <div class="panel-heading">
+            <h2>Daily Focus Mail</h2>
+            <span id="mail-status" class="connection-pill">Off</span>
+          </div>
+          <label for="digest-email">Email address</label>
+          <input id="digest-email" type="email" placeholder="student@example.com" autocomplete="email" />
+          <label for="digest-time">Send time</label>
+          <input id="digest-time" type="time" value="07:30" />
+          <p class="helper-text">Reviews Canvas assignments and emails the most important focus areas each day. Requires Canvas connected.</p>
+          <div class="connect-actions">
+            <button id="save-digest" class="primary-btn" type="button">Schedule</button>
+            <button id="send-test-digest" type="button">Test Mail</button>
+          </div>
+          <button id="check-digest-status" class="wide-secondary" type="button">Mail Status</button>
+        </section>
+
+        <section class="panel compact">
+          <div class="panel-heading">
+            <h2>Tutor Tools</h2>
+          </div>
+          <div class="tool-grid" aria-label="Tutor actions">
+            <button class="tool-btn" data-action="explain" type="button" title="Explain selected note">
+              <span aria-hidden="true">?</span>
+              Explain
+            </button>
+            <button class="tool-btn" data-action="organize" type="button" title="Organize canvas into topics">
+              <span aria-hidden="true">#</span>
+              Organize
+            </button>
+            <button class="tool-btn" data-action="quiz" type="button" title="Create quiz questions">
+              <span aria-hidden="true">✓</span>
+              Quiz Me
+            </button>
+            <button class="tool-btn" data-action="flashcards" type="button" title="Make flashcards">
+              <span aria-hidden="true">▣</span>
+              Cards
+            </button>
+            <button class="tool-btn" data-action="gaps" type="button" title="Find weak spots">
+              <span aria-hidden="true">!</span>
+              Gaps
+            </button>
+            <button class="tool-btn" data-action="plan" type="button" title="Build a study plan">
+              <span aria-hidden="true">→</span>
+              Plan
+            </button>
+          </div>
+        </section>
+
+        <section class="panel status-panel">
+          <h2>Selected</h2>
+            <p id="selected-summary">Connect Canvas to start.</p>
+        </section>
+      </aside>
+
+      <section class="workspace" aria-label="Student canvas">
+        <header class="workspace-bar">
+          <div>
+            <p class="eyebrow">Canvas Tutor board</p>
+            <h2>Connect Canvas, choose a course, study modules.</h2>
+          </div>
+          <div class="workspace-actions">
+            <button id="focus-sprint" type="button" title="Start a guided study sprint">Focus Sprint</button>
+            <button id="auto-layout" type="button" title="Arrange notes">Arrange</button>
+            <button id="reset-board" type="button" title="Clear board">Clear</button>
+          </div>
+        </header>
+
+        <div id="canvas" class="canvas" aria-label="Draggable study canvas">
+          <svg class="link-layer" aria-hidden="true"></svg>
+        </div>
+      </section>
+
+      <aside class="tutor-panel" aria-label="Tutor response">
+        <div class="tutor-header">
+          <div class="avatar" aria-hidden="true">AI</div>
+          <div>
+            <p class="eyebrow">Tutor response</p>
+            <h2 id="response-title">Ready to help</h2>
+          </div>
+        </div>
+        <div id="response-body" class="response-body">
+          <p>Select a note, then choose a tutor tool. The agent can explain concepts, make quizzes, build flashcards, and show weak spots.</p>
+        </div>
+        <section id="sprint-card" class="sprint-card" aria-label="Focus sprint" hidden>
+          <div class="sprint-top">
+            <div>
+              <p class="eyebrow">Focus sprint</p>
+              <h2 id="sprint-title">25-minute study sprint</h2>
+            </div>
+            <div id="sprint-timer" class="sprint-timer">25:00</div>
+          </div>
+          <div class="sprint-progress">
+            <span id="sprint-progress-bar"></span>
+          </div>
+          <div id="sprint-tasks" class="sprint-tasks"></div>
+          <div class="sprint-actions">
+            <button id="sprint-start" type="button">Start</button>
+            <button id="sprint-pause" type="button">Pause</button>
+            <button id="sprint-reset" type="button">Reset</button>
+          </div>
+        </section>
+      </aside>
+    </main>
+
+    <script src="app.js"></script>
+  </body>
+</html>
