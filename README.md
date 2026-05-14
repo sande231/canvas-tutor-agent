@@ -208,6 +208,27 @@ npm run send-digest
 
 The `render.yaml` blueprint includes a cron service named `canvas-tutor-agent-daily-email`. Render cron schedules use UTC, so the included `30 11 * * *` schedule is 7:30 AM Eastern during daylight saving time. Adjust it in the Render dashboard if needed.
 
+## Free Cloud Daily Email With GitHub Actions
+
+For a no-cost setup that works even when your Mac is asleep, use the included GitHub Actions workflow:
+
+```text
+.github/workflows/daily-canvas-todo.yml
+```
+
+It runs `npm run send-digest` every day at `30 11 * * *`, which is 7:30 AM Eastern during daylight saving time. It can also be run manually from the GitHub **Actions** tab.
+
+Add these repository secrets in GitHub:
+
+- `RESEND_API_KEY`
+- `EMAIL_FROM`
+- `CANVAS_BASE_URL`
+- `CANVAS_TOKEN`
+- `DIGEST_EMAIL`
+- `DIGEST_PROFILE_NAME`
+
+GitHub Actions cron uses UTC, so adjust the cron time when daylight saving time changes if you want the email to stay exactly at 7:30 AM Eastern.
+
 ## Files
 
 - `index.html` - app shell and controls
