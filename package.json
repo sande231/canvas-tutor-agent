@@ -5,7 +5,8 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "check": "node --check server.js && node --check app.js"
+    "check": "node --check server.js && node --check app.js && node --check scripts/send-digest-once.js",
+    "send-digest": "node scripts/send-digest-once.js"
   },
   "engines": {
     "node": ">=20"

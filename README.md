@@ -200,6 +200,14 @@ For a personal always-on daily email, add your own Canvas token to Render enviro
 
 Render note: Free web services can spin down after inactivity. For the most reliable scheduled email, use a paid always-on web service or a Render Cron Job/service design.
 
+This repo also includes a Render Cron command for daily email:
+
+```bash
+npm run send-digest
+```
+
+The `render.yaml` blueprint includes a cron service named `canvas-tutor-agent-daily-email`. Render cron schedules use UTC, so the included `30 11 * * *` schedule is 7:30 AM Eastern during daylight saving time. Adjust it in the Render dashboard if needed.
+
 ## Files
 
 - `index.html` - app shell and controls

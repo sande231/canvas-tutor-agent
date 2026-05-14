@@ -1536,10 +1536,18 @@ function canvasErrorText(payload) {
   return "";
 }
 
-server.listen(port, host, () => {
-  const displayHost = host === "0.0.0.0" ? "127.0.0.1" : host;
-  console.log(`Canvas Tutor Agent running at http://${displayHost}:${port}`);
-  console.log(deliveryNote());
-});
+if (require.main === module) {
+  server.listen(port, host, () => {
+    const displayHost = host === "0.0.0.0" ? "127.0.0.1" : host;
+    console.log(`Canvas Tutor Agent running at http://${displayHost}:${port}`);
+    console.log(deliveryNote());
+  });
 
-startDailyDigestScheduler();
+  startDailyDigestScheduler();
+}
+
+module.exports = {
+  buildAndDeliverDigest,
+  deliveryNote,
+  readDigestConfig,
+};

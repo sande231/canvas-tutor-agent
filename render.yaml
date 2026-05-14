@@ -22,3 +22,30 @@ services:
         value: "07:30"
       - key: DIGEST_PROFILE_NAME
         sync: false
+      - key: TZ
+        value: America/New_York
+  - type: cron
+    name: canvas-tutor-agent-daily-email
+    env: node
+    schedule: "30 11 * * *"
+    buildCommand: npm install
+    startCommand: npm run send-digest
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: RESEND_API_KEY
+        sync: false
+      - key: EMAIL_FROM
+        sync: false
+      - key: CANVAS_BASE_URL
+        sync: false
+      - key: CANVAS_TOKEN
+        sync: false
+      - key: DIGEST_EMAIL
+        sync: false
+      - key: DIGEST_TIME
+        value: "07:30"
+      - key: DIGEST_PROFILE_NAME
+        sync: false
+      - key: TZ
+        value: America/New_York
