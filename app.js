@@ -954,10 +954,11 @@ function moduleSourceStats(module) {
 }
 
 function moduleItemLabel(item) {
-  if (item.type === "File" && item.sourceKind === "zip" && item.readable) return "File · zip contents read";
+  if (item.type === "File" && item.sourceKind === "zip" && item.readable) return "File · zip contents read: notebooks, code, text, PDFs";
   if (item.type === "File" && item.sourceKind === "notebook" && item.readable) return "File · notebook cells read";
   if (item.type === "File" && item.sourceKind === "pdf" && item.readable) return "File · PDF text read";
   if (item.type === "File" && item.sourceKind === "code" && item.readable) return "File · source code read";
+  if (item.type === "File" && item.sourceKind === "text" && item.readable) return "File · text file read";
   if (item.type === "File" && item.readable) return "File · full text read";
   if (item.type === "File" && item.summary) return "File · needs PDF/DOCX parser";
   return item.type;

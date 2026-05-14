@@ -929,17 +929,15 @@ function processZipFile(title, buffer) {
   const entries = extractZipEntries(buffer)
     .filter((entry) => !entry.name.endsWith("/"))
     .filter((entry) => isUsefulArchiveFile(entry.name))
-    .slice(0, 30);
+    .slice(0, 40);
 
   const chunks = [];
 
   for (const entry of entries) {
-    const extracted = entry.name.endsWith(".ipynb")
-      ? safelyExtractNotebookText(entry.content.toString("utf8"))
-      : normalizeCodeOrText(entry.name, entry.content.toString("utf8"));
+    const extracted = extractArchiveEntryText(entry.name, entry.content);
 
     if (!extracted.trim()) continue;
-    chunks.push(`FILE: ${entry.name}\n${extracted.slice(0, 3000)}`);
+    chunks.push(`FILE: ${entry.name}\n${extracted.slice(0, 3600)}`);
   }
 
   if (!chunks.length) {
@@ -948,17 +946,24 @@ function processZipFile(title, buffer) {
       text: "",
       readable: false,
       contentType: "application/zip",
-      reason: "Zip opened, but no readable coding/text/notebook files were found inside.",
+      reason: "Zip opened, but no readable coding/text/notebook/PDF files were found inside.",
     };
   }
 
   return {
     title,
-    text: chunks.join("\n\n---\n\n").slice(0, 24000),
+    text: chunks.join("\n\n---\n\n").slice(0, 30000),
     readable: true,
     contentType: "application/zip",
     sourceKind: "zip",
   };
+}
+
+function extractArchiveEntryText(name, content) {
+  if (isNotebookFile(name, "")) return safelyExtractNotebookText(content.toString("utf8"));
+  if (isPdfFile(name, "", content)) return extractPdfText(content);
+  if (isReadableTextType("", name)) return normalizeCodeOrText(name, content.toString("utf8"));
+  return "";
 }
 
 function extractZipEntries(buffer) {
@@ -1177,7 +1182,7 @@ function isReadableTextType(contentType, title) {
     lowerType.includes("json") ||
     lowerType.includes("xml") ||
     lowerType.includes("html") ||
-    [".txt", ".md", ".csv", ".json", ".html", ".htm", ".rtf", ".py", ".js", ".ts", ".java", ".c", ".cpp", ".h", ".cs", ".sql", ".r", ".ipynb"].some((extension) =>
+    [".txt", ".md", ".csv", ".json", ".html", ".htm", ".rtf", ".py", ".js", ".ts", ".java", ".c", ".cpp", ".h", ".cs", ".sql", ".r", ".ipynb", ".pynb"].some((extension) =>
       lowerTitle.endsWith(extension),
     )
   );
@@ -1194,7 +1199,8 @@ function isZipFile(contentType, title, buffer) {
 }
 
 function isNotebookFile(title, contentType) {
-  return String(title || "").toLowerCase().endsWith(".ipynb") || String(contentType || "").includes("x-ipynb");
+  const lowerTitle = String(title || "").toLowerCase();
+  return lowerTitle.endsWith(".ipynb") || lowerTitle.endsWith(".pynb") || String(contentType || "").includes("x-ipynb");
 }
 
 function isPdfFile(title, contentType, buffer) {
@@ -1234,6 +1240,8 @@ function isUsefulArchiveFile(name) {
     ".sql",
     ".r",
     ".ipynb",
+    ".pynb",
+    ".pdf",
   ].some((extension) => lower.endsWith(extension));
 }
 

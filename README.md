@@ -78,9 +78,10 @@ Each selected course also shows **Select Module**:
 - Open Canvas module files through the local proxy when Canvas allows downloads
 - Read full text from text/HTML/RTF-style files
 - Parse `.ipynb` notebooks into markdown and code cells
+- Read `.txt`, `.md`, `.csv`, `.json`, `.html`, and other plain text files
 - Extract text from normal text-based `.pdf` files and slides when Canvas allows downloads
 - Read source-code files such as `.py`, `.js`, `.ts`, `.java`, `.c`, `.cpp`, `.cs`, `.sql`, and `.r`
-- Open `.zip` files and extract useful coding/text files inside
+- Open `.zip` files and extract useful notebooks, coding files, text files, and PDFs inside
 - Mark scanned PDFs/DOCX/slides as needing OCR or a document parser instead of pretending to read them
 - Generate deeper study notes from that module
 - Extract key points and key terms
