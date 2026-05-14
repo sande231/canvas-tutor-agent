@@ -957,10 +957,13 @@ function moduleItemLabel(item) {
   if (item.type === "File" && item.sourceKind === "zip" && item.readable) return "File · zip contents read: notebooks, code, text, PDFs";
   if (item.type === "File" && item.sourceKind === "notebook" && item.readable) return "File · notebook cells read";
   if (item.type === "File" && item.sourceKind === "pdf" && item.readable) return "File · PDF text read";
+  if (item.type === "File" && item.sourceKind === "docx" && item.readable) return "File · Word document text read";
+  if (item.type === "File" && item.sourceKind === "slides" && item.readable) return "File · PowerPoint slide text read";
+  if (item.type === "File" && item.sourceKind === "ocr" && item.readable) return "File · OCR text read";
   if (item.type === "File" && item.sourceKind === "code" && item.readable) return "File · source code read";
   if (item.type === "File" && item.sourceKind === "text" && item.readable) return "File · text file read";
   if (item.type === "File" && item.readable) return "File · full text read";
-  if (item.type === "File" && item.summary) return "File · needs PDF/DOCX parser";
+  if (item.type === "File" && item.summary) return "File · needs OCR or unsupported parser";
   return item.type;
 }
 

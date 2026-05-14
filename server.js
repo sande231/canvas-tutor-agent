@@ -1,9 +1,11 @@
 const http = require("http");
 const fs = require("fs");
 const net = require("net");
+const os = require("os");
 const path = require("path");
 const tls = require("tls");
 const zlib = require("zlib");
+const { execFileSync } = require("child_process");
 
 const root = __dirname;
 loadEnvFile(path.join(root, ".env"));
@@ -876,10 +878,6 @@ function stripHtml(value) {
 }
 
 function processDownloadedFile(title, contentType, buffer) {
-  if (isZipFile(contentType, title, buffer)) {
-    return processZipFile(title, buffer);
-  }
-
   if (isNotebookFile(title, contentType)) {
     const notebookText = safelyExtractNotebookText(buffer.toString("utf8"));
     return {
@@ -892,6 +890,10 @@ function processDownloadedFile(title, contentType, buffer) {
     };
   }
 
+  if (isOfficeDocumentFile(title, contentType, buffer)) {
+    return processOfficeDocument(title, contentType, buffer);
+  }
+
   if (isPdfFile(title, contentType, buffer)) {
     const pdfText = extractPdfText(buffer);
     return {
@@ -902,8 +904,28 @@ function processDownloadedFile(title, contentType, buffer) {
       sourceKind: "pdf",
       reason: pdfText.trim()
         ? ""
-        : "PDF downloaded, but the text could not be extracted. It may be scanned images or encoded slides.",
+        : ocrToolAvailable()
+          ? "PDF downloaded, but text extraction found no readable text. OCR is available for image files; scanned PDFs may need page image conversion."
+          : "PDF downloaded, but text extraction found no readable text. This is likely a scanned/image PDF and needs OCR tooling such as Tesseract plus PDF image conversion.",
     };
+  }
+
+  if (isImageFile(title, contentType)) {
+    const ocrText = extractImageTextWithOcr(title, buffer);
+    return {
+      title,
+      text: ocrText.slice(0, 16000),
+      readable: Boolean(ocrText.trim()),
+      contentType,
+      sourceKind: "ocr",
+      reason: ocrText.trim()
+        ? ""
+        : "Image downloaded, but OCR is not installed or could not read text from the image.",
+    };
+  }
+
+  if (isZipFile(contentType, title, buffer)) {
+    return processZipFile(title, buffer);
   }
 
   if (isReadableTextType(contentType, title)) {
@@ -946,7 +968,7 @@ function processZipFile(title, buffer) {
       text: "",
       readable: false,
       contentType: "application/zip",
-      reason: "Zip opened, but no readable coding/text/notebook/PDF files were found inside.",
+      reason: "Zip opened, but no readable coding/text/notebook/PDF/DOCX/PPTX files were found inside.",
     };
   }
 
@@ -961,9 +983,31 @@ function processZipFile(title, buffer) {
 
 function extractArchiveEntryText(name, content) {
   if (isNotebookFile(name, "")) return safelyExtractNotebookText(content.toString("utf8"));
+  if (isOfficeDocumentFile(name, "", content)) return processOfficeDocument(name, "", content).text;
   if (isPdfFile(name, "", content)) return extractPdfText(content);
   if (isReadableTextType("", name)) return normalizeCodeOrText(name, content.toString("utf8"));
   return "";
+}
+
+function processOfficeDocument(title, contentType, buffer) {
+  const entries = extractZipEntries(buffer);
+  const lowerTitle = String(title || "").toLowerCase();
+  const isPptx = lowerTitle.endsWith(".pptx") || String(contentType || "").includes("presentationml");
+  const xmlEntries = entries
+    .filter((entry) => isPptx ? /ppt\/slides\/slide\d+\.xml$/i.test(entry.name) : /word\/document\.xml$/i.test(entry.name))
+    .sort((left, right) => left.name.localeCompare(right.name, undefined, { numeric: true }));
+  const chunks = xmlEntries
+    .map((entry) => extractOfficeXmlText(entry.content.toString("utf8")))
+    .filter(Boolean);
+
+  return {
+    title,
+    text: chunks.join("\n\n").slice(0, 24000),
+    readable: Boolean(chunks.join("").trim()),
+    contentType,
+    sourceKind: isPptx ? "slides" : "docx",
+    reason: chunks.length ? "" : "Office file opened, but no readable document or slide text was found.",
+  };
 }
 
 function extractZipEntries(buffer) {
@@ -1032,6 +1076,62 @@ function safelyExtractNotebookText(rawJson) {
     return extractNotebookText(rawJson);
   } catch {
     return "";
+  }
+}
+
+function extractOfficeXmlText(xml) {
+  return decodeXmlEntities(
+    String(xml || "")
+      .replace(/<w:tab\/>/g, " ")
+      .replace(/<w:br\/>/g, "\n")
+      .replace(/<\/w:p>/g, "\n")
+      .replace(/<\/a:p>/g, "\n")
+      .replace(/<[^>]+>/g, " ")
+      .replace(/\s+\n/g, "\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .replace(/[ \t]{2,}/g, " ")
+      .trim(),
+  );
+}
+
+function decodeXmlEntities(text) {
+  return String(text || "")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)))
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, code) => String.fromCharCode(parseInt(code, 16)));
+}
+
+function extractImageTextWithOcr(title, buffer) {
+  if (!ocrToolAvailable()) return "";
+
+  const extension = path.extname(title || "").toLowerCase() || ".png";
+  const tempPath = path.join(os.tmpdir(), `canvas-tutor-ocr-${Date.now()}${extension}`);
+  try {
+    fs.writeFileSync(tempPath, buffer);
+    return String(execFileSync("tesseract", [tempPath, "stdout"], { timeout: 20000 }) || "")
+      .replace(/\s+/g, " ")
+      .trim();
+  } catch {
+    return "";
+  } finally {
+    try {
+      fs.unlinkSync(tempPath);
+    } catch {
+      // Ignore cleanup failures for temporary OCR files.
+    }
+  }
+}
+
+function ocrToolAvailable() {
+  try {
+    execFileSync("tesseract", ["--version"], { stdio: "ignore", timeout: 3000 });
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -1203,6 +1303,18 @@ function isNotebookFile(title, contentType) {
   return lowerTitle.endsWith(".ipynb") || lowerTitle.endsWith(".pynb") || String(contentType || "").includes("x-ipynb");
 }
 
+function isOfficeDocumentFile(title, contentType, buffer) {
+  const lowerTitle = String(title || "").toLowerCase();
+  const lowerType = String(contentType || "").toLowerCase();
+  return (
+    lowerTitle.endsWith(".docx") ||
+    lowerTitle.endsWith(".pptx") ||
+    lowerType.includes("wordprocessingml") ||
+    lowerType.includes("presentationml") ||
+    (buffer.length >= 4 && buffer.readUInt32LE(0) === 0x04034b50 && (lowerTitle.endsWith(".docx") || lowerTitle.endsWith(".pptx")))
+  );
+}
+
 function isPdfFile(title, contentType, buffer) {
   const lowerType = String(contentType || "").toLowerCase();
   const lowerTitle = String(title || "").toLowerCase();
@@ -1210,6 +1322,15 @@ function isPdfFile(title, contentType, buffer) {
     lowerTitle.endsWith(".pdf") ||
     lowerType.includes("pdf") ||
     buffer.slice(0, 5).toString("latin1") === "%PDF-"
+  );
+}
+
+function isImageFile(title, contentType) {
+  const lowerTitle = String(title || "").toLowerCase();
+  const lowerType = String(contentType || "").toLowerCase();
+  return (
+    lowerType.startsWith("image/") ||
+    [".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"].some((extension) => lowerTitle.endsWith(extension))
   );
 }
 
@@ -1242,6 +1363,14 @@ function isUsefulArchiveFile(name) {
     ".ipynb",
     ".pynb",
     ".pdf",
+    ".docx",
+    ".pptx",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".tif",
+    ".tiff",
+    ".bmp",
   ].some((extension) => lower.endsWith(extension));
 }
 

@@ -80,15 +80,20 @@ Each selected course also shows **Select Module**:
 - Parse `.ipynb` notebooks into markdown and code cells
 - Read `.txt`, `.md`, `.csv`, `.json`, `.html`, and other plain text files
 - Extract text from normal text-based `.pdf` files and slides when Canvas allows downloads
+- Extract text from `.docx` Word documents
+- Extract text from `.pptx` PowerPoint slides
+- Use optional OCR for image files when Tesseract is installed locally
 - Read source-code files such as `.py`, `.js`, `.ts`, `.java`, `.c`, `.cpp`, `.cs`, `.sql`, and `.r`
-- Open `.zip` files and extract useful notebooks, coding files, text files, and PDFs inside
-- Mark scanned PDFs/DOCX/slides as needing OCR or a document parser instead of pretending to read them
+- Open `.zip` files and extract useful notebooks, coding files, text files, PDFs, DOCX, PPTX, and images inside
+- Mark scanned PDFs/images as needing OCR instead of pretending to read them
 - Generate deeper study notes from that module
 - Extract key points and key terms
 - Generate a separate flashcard deck directly from readable module facts
 - Create source-based multiple-choice quiz questions from sentences inside module pages/files/PDFs/notebooks
 - Build learning goals, core concept explanations, coding practice tasks, and common mistakes
 - Add the generated module note to the canvas
+
+OCR note: text-based PDFs, DOCX, PPTX, notebooks, text files, code files, and zip contents can be read directly. Image files use OCR only if Tesseract is installed on the machine running the app. Scanned PDFs may still need OCR/PDF image conversion tooling.
 
 ## Daily Focus Mail
 
