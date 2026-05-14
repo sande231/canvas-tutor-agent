@@ -78,13 +78,14 @@ Each selected course also shows **Select Module**:
 - Open Canvas module files through the local proxy when Canvas allows downloads
 - Read full text from text/HTML/RTF-style files
 - Parse `.ipynb` notebooks into markdown and code cells
+- Extract text from normal text-based `.pdf` files and slides when Canvas allows downloads
 - Read source-code files such as `.py`, `.js`, `.ts`, `.java`, `.c`, `.cpp`, `.cs`, `.sql`, and `.r`
 - Open `.zip` files and extract useful coding/text files inside
-- Mark PDFs/DOCX/slides as needing a document parser instead of pretending to read them
+- Mark scanned PDFs/DOCX/slides as needing OCR or a document parser instead of pretending to read them
 - Generate deeper study notes from that module
 - Extract key points and key terms
 - Generate a separate flashcard deck directly from readable module facts
-- Create source-based multiple-choice quiz questions from sentences inside module pages/files/notebooks
+- Create source-based multiple-choice quiz questions from sentences inside module pages/files/PDFs/notebooks
 - Build learning goals, core concept explanations, coding practice tasks, and common mistakes
 - Add the generated module note to the canvas
 

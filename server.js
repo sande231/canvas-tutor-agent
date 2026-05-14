@@ -250,7 +250,7 @@ async function proxyCanvasFileText(request, response) {
         contentType,
         reason:
           processed.reason ||
-          `This file is ${contentType || "not plain text"}. Add a PDF/DOCX parser to read its full body.`,
+          `This file is ${contentType || "not plain text"}. It may need OCR or a DOCX/slides parser to read its full body.`,
       });
     } finally {
       clearTimeout(timeout);
@@ -892,6 +892,20 @@ function processDownloadedFile(title, contentType, buffer) {
     };
   }
 
+  if (isPdfFile(title, contentType, buffer)) {
+    const pdfText = extractPdfText(buffer);
+    return {
+      title,
+      text: pdfText.slice(0, 20000),
+      readable: Boolean(pdfText.trim()),
+      contentType,
+      sourceKind: "pdf",
+      reason: pdfText.trim()
+        ? ""
+        : "PDF downloaded, but the text could not be extracted. It may be scanned images or encoded slides.",
+    };
+  }
+
   if (isReadableTextType(contentType, title)) {
     return {
       title,
@@ -907,7 +921,7 @@ function processDownloadedFile(title, contentType, buffer) {
     text: "",
     readable: false,
     contentType,
-    reason: `This file is ${contentType || "not plain text"}. Add a PDF/DOCX parser to read its full body.`,
+    reason: `This file is ${contentType || "not plain text"}. It may need OCR or a DOCX/slides parser to read its full body.`,
   };
 }
 
@@ -1016,6 +1030,125 @@ function safelyExtractNotebookText(rawJson) {
   }
 }
 
+function extractPdfText(buffer) {
+  const chunks = [];
+  let cursor = 0;
+  const marker = Buffer.from("stream");
+
+  while (cursor < buffer.length) {
+    const streamIndex = buffer.indexOf(marker, cursor);
+    if (streamIndex === -1) break;
+
+    let dataStart = streamIndex + marker.length;
+    if (buffer[dataStart] === 0x0d && buffer[dataStart + 1] === 0x0a) dataStart += 2;
+    else if (buffer[dataStart] === 0x0a || buffer[dataStart] === 0x0d) dataStart += 1;
+
+    const endIndex = buffer.indexOf(Buffer.from("endstream"), dataStart);
+    if (endIndex === -1) break;
+
+    const objectStart = Math.max(0, buffer.lastIndexOf(Buffer.from("obj"), streamIndex) - 2500);
+    const objectHeader = buffer.slice(objectStart, streamIndex).toString("latin1");
+    const rawStream = buffer.slice(dataStart, endIndex);
+    const decoded = decodePdfStream(rawStream, objectHeader);
+    const text = extractPdfTextOperators(decoded.toString("latin1"));
+    if (text.trim()) chunks.push(text);
+    cursor = endIndex + 9;
+  }
+
+  return chunks
+    .join("\n")
+    .replace(/\s+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .replace(/[ \t]{2,}/g, " ")
+    .trim();
+}
+
+function decodePdfStream(stream, header) {
+  if (!/\/FlateDecode\b/.test(header)) return stream;
+
+  try {
+    return zlib.inflateSync(stream);
+  } catch {
+    try {
+      return zlib.inflateRawSync(stream);
+    } catch {
+      return Buffer.alloc(0);
+    }
+  }
+}
+
+function extractPdfTextOperators(content) {
+  const parts = [];
+  const operatorPattern = /\[((?:.|\n|\r)*?)\]\s*TJ|\((?:\\.|[^\\()])*\)\s*Tj|<([0-9a-fA-F\s]+)>\s*Tj/g;
+  let match;
+
+  while ((match = operatorPattern.exec(content))) {
+    const token = match[0];
+    if (token.endsWith("TJ")) {
+      parts.push(extractPdfArrayText(match[1]));
+      continue;
+    }
+    if (match[2]) {
+      parts.push(decodePdfHex(match[2]));
+      continue;
+    }
+    const literal = token.match(/\((?:\\.|[^\\()])*\)\s*Tj/);
+    if (literal) parts.push(decodePdfLiteral(literal[0].replace(/\s*Tj$/, "")));
+  }
+
+  return parts
+    .map((part) => part.trim())
+    .filter((part) => part.length > 1)
+    .join(" ");
+}
+
+function extractPdfArrayText(value) {
+  const parts = [];
+  const pattern = /\((?:\\.|[^\\()])*\)|<([0-9a-fA-F\s]+)>/g;
+  let match;
+
+  while ((match = pattern.exec(value))) {
+    if (match[1]) parts.push(decodePdfHex(match[1]));
+    else parts.push(decodePdfLiteral(match[0]));
+  }
+
+  return parts.join(" ");
+}
+
+function decodePdfLiteral(value) {
+  return String(value || "")
+    .replace(/^\(|\)$/g, "")
+    .replace(/\\([nrtbf()\\])/g, (_, char) => {
+      const escapes = { n: "\n", r: "\r", t: "\t", b: "", f: "", "(": "(", ")": ")", "\\": "\\" };
+      return escapes[char] ?? char;
+    })
+    .replace(/\\\d{1,3}/g, " ")
+    .replace(/[^\x09\x0a\x0d\x20-\x7e]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function decodePdfHex(value) {
+  const clean = String(value || "").replace(/\s+/g, "");
+  const bytes = [];
+  for (let index = 0; index < clean.length - 1; index += 2) {
+    bytes.push(parseInt(clean.slice(index, index + 2), 16));
+  }
+
+  const buffer = Buffer.from(bytes);
+  const ascii = buffer.toString("latin1");
+  if (/^[\x09\x0a\x0d\x20-\x7e]+$/.test(ascii)) return ascii.replace(/\s+/g, " ").trim();
+
+  const utf16be = [];
+  for (let index = 0; index < buffer.length - 1; index += 2) {
+    utf16be.push(buffer.readUInt16BE(index));
+  }
+  return String.fromCharCode(...utf16be)
+    .replace(/[^\x09\x0a\x0d\x20-\x7e]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function normalizeCodeOrText(title, rawText) {
   if (isCodeFile(title)) {
     const lines = rawText.split(/\r?\n/);
@@ -1062,6 +1195,16 @@ function isZipFile(contentType, title, buffer) {
 
 function isNotebookFile(title, contentType) {
   return String(title || "").toLowerCase().endsWith(".ipynb") || String(contentType || "").includes("x-ipynb");
+}
+
+function isPdfFile(title, contentType, buffer) {
+  const lowerType = String(contentType || "").toLowerCase();
+  const lowerTitle = String(title || "").toLowerCase();
+  return (
+    lowerTitle.endsWith(".pdf") ||
+    lowerType.includes("pdf") ||
+    buffer.slice(0, 5).toString("latin1") === "%PDF-"
+  );
 }
 
 function isCodeFile(title) {

@@ -852,29 +852,33 @@ function renderModuleQuiz(course, module) {
     <div class="coach-section">
       <h3>Multiple Choice Questions</h3>
       <div class="map">
-        ${questions
-          .map((question, index) => {
-            const correctIndex = question.choices.findIndex((choice) => choice === question.answer);
-            return `
-              <div class="mcq-card">
-                <strong>${index + 1}. ${escapeHtml(question.question)}</strong>
-                <div class="mcq-choices">
-                  ${question.choices
-                    .map(
-                      (choice, choiceIndex) => `
-                        <span class="${choice === question.answer ? "is-correct" : ""}">
-                          ${String.fromCharCode(65 + choiceIndex)}. ${escapeHtml(choice)}
-                        </span>
-                      `,
-                    )
-                    .join("")}
-                </div>
-                <p class="mcq-answer">Correct: ${String.fromCharCode(65 + Math.max(correctIndex, 0))}. ${escapeHtml(question.answer)}</p>
-                <p>${escapeHtml(question.explanation)}</p>
-              </div>
-            `;
-          })
-          .join("")}
+        ${
+          questions.length
+            ? questions
+                .map((question, index) => {
+                  const correctIndex = question.choices.findIndex((choice) => choice === question.answer);
+                  return `
+                    <div class="mcq-card">
+                      <strong>${index + 1}. ${escapeHtml(question.question)}</strong>
+                      <div class="mcq-choices">
+                        ${question.choices
+                          .map(
+                            (choice, choiceIndex) => `
+                              <span class="${choice === question.answer ? "is-correct" : ""}">
+                                ${String.fromCharCode(65 + choiceIndex)}. ${escapeHtml(choice)}
+                              </span>
+                            `,
+                          )
+                          .join("")}
+                      </div>
+                      <p class="mcq-answer">Correct: ${String.fromCharCode(65 + Math.max(correctIndex, 0))}. ${escapeHtml(question.answer)}</p>
+                      <p>${escapeHtml(question.explanation)}</p>
+                    </div>
+                  `;
+                })
+                .join("")
+            : `<div class="explain-box"><p>No real quiz questions were generated because Canvas did not expose readable text from this module yet. If the module uses PDFs, make sure Canvas allows the app to download them; scanned image PDFs may still need OCR.</p></div>`
+        }
       </div>
     </div>
     <div class="explain-box">
@@ -945,21 +949,28 @@ function summarizeModule(module) {
 function moduleSourceStats(module) {
   return {
     total: module.items.length,
-    readable: module.items.filter((item) => item.summary && item.summary.trim().length > 20).length,
+    readable: module.items.filter((item) => hasReadableStudyText(item)).length,
   };
 }
 
 function moduleItemLabel(item) {
   if (item.type === "File" && item.sourceKind === "zip" && item.readable) return "File · zip contents read";
   if (item.type === "File" && item.sourceKind === "notebook" && item.readable) return "File · notebook cells read";
+  if (item.type === "File" && item.sourceKind === "pdf" && item.readable) return "File · PDF text read";
   if (item.type === "File" && item.sourceKind === "code" && item.readable) return "File · source code read";
   if (item.type === "File" && item.readable) return "File · full text read";
   if (item.type === "File" && item.summary) return "File · needs PDF/DOCX parser";
   return item.type;
 }
 
+function hasReadableStudyText(item) {
+  if (!item.summary || item.summary.trim().length < 35) return false;
+  if (item.type === "File" && item.readable === false) return false;
+  return !isLowValueStudySentence(item.summary);
+}
+
 function analyzeModule(module) {
-  const readableItems = module.items.filter((item) => item.summary || item.title);
+  const readableItems = module.items.filter((item) => hasReadableStudyText(item));
   const combinedText = readableItems
     .map((item) => `${item.title}. ${item.summary || ""}`)
     .join(" ");
@@ -1083,6 +1094,8 @@ function buildModuleQuiz(module, analysis = analyzeModule(module)) {
 }
 
 function buildModuleMcqQuiz(module, analysis = analyzeModule(module)) {
+  if (!analysis.facts.length && !analysis.keyTerms.length && !analysis.concepts.length) return [];
+
   const distractorPool = [
     ...analysis.concepts.map((concept) => concept.explanation),
     ...analysis.keyTerms.map((term) => term.definition),
@@ -1126,16 +1139,6 @@ function buildModuleMcqQuiz(module, analysis = analyzeModule(module)) {
       seed: index + 40,
     }));
   });
-
-  if (!questions.length) {
-    questions.push(makeMcqQuestion({
-      question: `What is the best next step for studying ${module.name}?`,
-      answer: "Open the module item in Canvas, find the main concept, then test yourself with one example.",
-      explanation: "Canvas did not expose enough readable body text, so the safest study move is to inspect the source module item directly.",
-      pool: distractorPool,
-      seed: 60,
-    }));
-  }
 
   return dedupeMcqQuestions(questions).slice(0, 14);
 }
@@ -1198,10 +1201,10 @@ function dedupeMcqQuestions(questions) {
 function extractStudyFacts(module, items) {
   const facts = [];
 
-  items.forEach((item) => {
+  items.filter((item) => hasReadableStudyText(item)).forEach((item) => {
     const sentences = splitSentences(item.summary || "")
       .filter((sentence) => sentence.length > 35)
-      .filter((sentence) => !/^(click|submit|available|points|due|http)/i.test(sentence))
+      .filter((sentence) => !isLowValueStudySentence(sentence))
       .slice(0, 8);
 
     sentences.forEach((sentence) => {
@@ -1216,13 +1219,7 @@ function extractStudyFacts(module, items) {
   });
 
   if (facts.length) return facts.slice(0, 18);
-
-  return module.items.slice(0, 6).map((item) => ({
-    source: item.title,
-    question: `What is the purpose of ${item.title}?`,
-    quizQuestion: `What do you need to learn from ${item.title}?`,
-    answer: `Open ${item.title} in Canvas and identify the main concept, example, and assignment connection.`,
-  }));
+  return [];
 }
 
 function buildFactQuestion(sentence, term, item) {
@@ -1240,6 +1237,16 @@ function buildFactQuestion(sentence, term, item) {
     return `What does ${term} mean according to ${item.title}?`;
   }
   return `What is the main idea of this sentence from ${item.title}: ${shorten(sentence, 95)}?`;
+}
+
+function isLowValueStudySentence(sentence) {
+  const text = String(sentence || "").trim().toLowerCase();
+  if (!text) return true;
+  return (
+    /^(click|submit|available|points|due|http|https|file|application\/pdf|application\/octet-stream)/i.test(text) ||
+    /canvas did not expose readable text|add a pdf\/docx parser|not plain text|download returned|could not read the canvas file/i.test(text) ||
+    /^[\w\s.-]+\.(pdf|docx|pptx|zip|ipynb)$/i.test(text)
+  );
 }
 
 function bestTermFromSentence(sentence) {
