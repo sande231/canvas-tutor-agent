@@ -1,0 +1,32 @@
+name: Daily Canvas To Do Email
+
+on:
+  schedule:
+    # GitHub cron uses UTC. 11:30 UTC is 7:30 AM Eastern during daylight saving time.
+    - cron: "30 11 * * *"
+  workflow_dispatch:
+
+jobs:
+  send-canvas-todo:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+      EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+      CANVAS_BASE_URL: ${{ secrets.CANVAS_BASE_URL }}
+      CANVAS_TOKEN: ${{ secrets.CANVAS_TOKEN }}
+      DIGEST_EMAIL: ${{ secrets.DIGEST_EMAIL }}
+      DIGEST_TIME: "07:30"
+      DIGEST_PROFILE_NAME: ${{ secrets.DIGEST_PROFILE_NAME }}
+      TZ: America/New_York
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Send Canvas To Do email
+        run: npm run send-digest
