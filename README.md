@@ -52,6 +52,8 @@ Click **Connect**, then **Import Work**.
 
 The app sends Canvas requests through the local `/api/canvas` proxy in `server.js`, which avoids direct browser CORS failures.
 
+Use the **Agent** tutor tool to explain the project, diagnose Canvas reader problems, list what has already been fixed, and show which module files are still blocked or unreadable.
+
 After Canvas connects, the tutor panel shows your active Canvas courses as **Study Areas**. Pick a course to get a focused breakdown of upcoming assignments and what to study first.
 
 Each course also has **Assignment Coach**:
@@ -106,7 +108,7 @@ Use **Daily Focus Mail** after Canvas is connected:
 
 If email sending is not configured, the app saves `.eml` drafts in `outbox/`.
 
-The daily email sends exactly **5 Canvas Tutor key points** at your selected time, including what to start first, which course/module to study, what to prepare next, and one end-of-day Canvas check.
+The daily email sends a **Canvas To Do** list plus **5 Canvas Tutor focus points** at your selected time. It includes upcoming Canvas items, course names, item types, due dates, Canvas links when available, what to start first, what to prepare next, and one end-of-day Canvas check.
 
 Use **Mail Status** to see whether the app is in real-email mode or draft-outbox mode, and to view recent saved drafts.
 
@@ -144,6 +146,40 @@ Use **Mail Status** after restarting to confirm it says real email instead of dr
 
 The daily schedule runs only while `node server.js` is running.
 
+### Background Daily Email On Mac
+
+You can keep daily Canvas To Do emails running even when the browser tab is closed by installing the background mail agent:
+
+```bash
+./scripts/install-background-mail.sh
+```
+
+It starts the app in the background at:
+
+```text
+http://127.0.0.1:4200
+```
+
+The background agent starts when you log in and keeps the daily scheduler alive while your Mac is awake. If your Mac is asleep or powered off at the scheduled time, the local scheduler cannot send mail. For always-on mail, deploy the app to Render.
+
+To remove the background agent:
+
+```bash
+./scripts/uninstall-background-mail.sh
+```
+
+To temporarily test Canvas To Do email every 2 minutes:
+
+```bash
+node scripts/enable-two-minute-mail-test.js
+```
+
+When testing is done, restore the normal daily schedule:
+
+```bash
+node scripts/restore-daily-mail.js
+```
+
 ## Deploy To Render
 
 This project includes `package.json` and `render.yaml` so Render can run it as a Node web service.
@@ -154,8 +190,15 @@ Recommended Render settings:
 - Start command: `npm start`
 - Environment variable: `RESEND_API_KEY`
 - Environment variable: `EMAIL_FROM`
+- Environment variable: `CANVAS_BASE_URL`
+- Environment variable: `CANVAS_TOKEN`
+- Environment variable: `DIGEST_EMAIL`
+- Environment variable: `DIGEST_TIME` with value `07:30`
+- Optional environment variable: `DIGEST_PROFILE_NAME`
 
-Do not add Canvas access tokens to Render environment variables. Each student should enter their own Canvas URL and token in the app.
+For a personal always-on daily email, add your own Canvas token to Render environment variables. Do not commit it to GitHub. For a multi-student app, each student would need their own secure login/token flow instead of shared environment variables.
+
+Render note: Free web services can spin down after inactivity. For the most reliable scheduled email, use a paid always-on web service or a Render Cron Job/service design.
 
 ## Files
 

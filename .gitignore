@@ -2,6 +2,7 @@
 .DS_Store
 node_modules/
 outbox/
+logs/
 daily-digest-config.json
 daily-digest-state.json
 npm-debug.log*

@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.sandeep.canvas-tutor-agent</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/node</string>
+    <string>server.js</string>
+    <string>4200</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/sandeep/Documents/Codex/2026-05-12/can-you-give-me-some-ideas</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>/Users/sandeep/Documents/Codex/2026-05-12/can-you-give-me-some-ideas/logs/background-mail.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/sandeep/Documents/Codex/2026-05-12/can-you-give-me-some-ideas/logs/background-mail-error.log</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOST</key>
+    <string>127.0.0.1</string>
+    <key>PORT</key>
+    <string>4200</string>
+  </dict>
+</dict>
+</plist>

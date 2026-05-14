@@ -113,9 +113,7 @@ async function sendDailyDigestTest(request, response) {
 }
 
 function sendDailyDigestStatus(response) {
-  const config = fs.existsSync(digestConfigPath)
-    ? parseJson(fs.readFileSync(digestConfigPath, "utf8"))
-    : null;
+  const config = readDigestConfig();
   const state = fs.existsSync(digestStatePath)
     ? parseJson(fs.readFileSync(digestStatePath, "utf8"))
     : {};
@@ -195,14 +193,19 @@ async function proxyCanvasFileText(request, response) {
   const baseUrl = normalizeCanvasUrl(body.baseUrl);
   const token = String(body.token || "").trim();
   const fileId = String(body.fileId || "").trim();
+  const apiPath = String(body.apiPath || "");
 
-  if (!baseUrl || !token || !fileId) {
+  if (!baseUrl || !token || (!fileId && !apiPath.startsWith("/api/v1/"))) {
     sendJson(response, 400, { error: "Missing Canvas URL, token, or file id." });
     return;
   }
 
   try {
-    const file = await fetchCanvasJson(baseUrl, token, `/api/v1/files/${encodeURIComponent(fileId)}`);
+    const file = await fetchCanvasJson(
+      baseUrl,
+      token,
+      apiPath.startsWith("/api/v1/") ? apiPath : `/api/v1/files/${encodeURIComponent(fileId)}`,
+    );
     const downloadUrl = file.url || file["url"];
 
     if (!downloadUrl) {
@@ -341,29 +344,52 @@ function buildDigest(config, plannerItems) {
       const title = item.plannable.title || item.plannable_type || "Canvas item";
       const course = item.context_name || "Canvas";
       const details = stripHtml(item.plannable.details || item.plannable.description || "");
+      const type = readablePlannerType(item.plannable_type || item.plannable.type || "");
+      const url = item.html_url || item.plannable.html_url || "";
       return {
         title,
         course,
         dueAt,
         details,
+        type,
+        url,
         urgency: dueAt ? new Date(dueAt).getTime() : Number.MAX_SAFE_INTEGER,
       };
     })
     .sort((left, right) => left.urgency - right.urgency)
-    .slice(0, 10);
+    .slice(0, 12);
 
   const today = new Intl.DateTimeFormat("en-US", {
     weekday: "long",
     month: "short",
     day: "numeric",
   }).format(new Date());
-  const subject = `Canvas focus plan for ${today}`;
+  const subject = `Canvas to-do list for ${today}`;
   const focusPoints = buildFiveFocusPoints(items);
+  const todoItems = buildCanvasTodoList(items);
 
   const lines = [
     `Hi ${config.profileName || "there"},`,
     "",
-    "Here are your 5 Canvas Tutor key points for today:",
+    `Here is your Canvas to-do list for ${today}:`,
+    "",
+    ...(todoItems.length
+      ? todoItems.flatMap((item, index) => [
+          `${index + 1}. ${item.title}`,
+          `   Course: ${item.course}`,
+          `   Type: ${item.type}`,
+          `   Due: ${item.dueText}`,
+          `   Start with: ${item.action}`,
+          item.url ? `   Link: ${item.url}` : "",
+          "",
+        ])
+      : [
+          "No Canvas to-do items were found in the next check window.",
+          "Start with the newest module and make three flashcards.",
+          "",
+        ]),
+    "",
+    "Top 5 focus points:",
     "",
     ...focusPoints.flatMap((point, index) => [
       `${index + 1}. ${point.title}`,
@@ -374,8 +400,28 @@ function buildDigest(config, plannerItems) {
   ];
 
   const html = `
-    <h2>5 Canvas Tutor key points for ${escapeHtml(today)}</h2>
-    <p>Hi ${escapeHtml(config.profileName || "there")}, here is what to focus on today.</p>
+    <h2>Canvas to-do list for ${escapeHtml(today)}</h2>
+    <p>Hi ${escapeHtml(config.profileName || "there")}, here is what to do today.</p>
+    ${
+      todoItems.length
+        ? `<h3>Canvas To Do</h3>
+           <ol>
+            ${todoItems
+              .map(
+                (item) => `
+                  <li>
+                    <strong>${escapeHtml(item.title)}</strong><br>
+                    ${escapeHtml(item.course)} · ${escapeHtml(item.type)} · ${escapeHtml(item.dueText)}<br>
+                    Start with: ${escapeHtml(item.action)}
+                    ${item.url ? `<br><a href="${escapeHtml(item.url)}">Open in Canvas</a>` : ""}
+                  </li>
+                `,
+              )
+              .join("")}
+           </ol>`
+        : `<p><strong>No Canvas to-do items found.</strong> Open your newest module, review announcements, and make three flashcards.</p>`
+    }
+    <h3>Top 5 Focus Points</h3>
     <ol>
       ${focusPoints
         .map(
@@ -393,6 +439,23 @@ function buildDigest(config, plannerItems) {
   `;
 
   return { subject, text: lines.join("\n"), html };
+}
+
+function buildCanvasTodoList(items) {
+  return items.slice(0, 8).map((item) => ({
+    title: item.title,
+    course: item.course,
+    type: item.type,
+    dueText: item.dueAt ? formatDate(item.dueAt) : "No due date listed",
+    action: focusAdvice(item),
+    url: item.url,
+  }));
+}
+
+function readablePlannerType(value) {
+  const text = String(value || "").replace(/_/g, " ").trim();
+  if (!text) return "Canvas item";
+  return text.replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
 function buildFiveFocusPoints(items) {
@@ -726,27 +789,53 @@ function hasSmtpConfig() {
   );
 }
 
+function readDigestConfig() {
+  if (fs.existsSync(digestConfigPath)) {
+    return parseJson(fs.readFileSync(digestConfigPath, "utf8"));
+  }
+
+  const envConfig = normalizeDigestConfig({
+    baseUrl: process.env.CANVAS_BASE_URL,
+    token: process.env.CANVAS_TOKEN,
+    email: process.env.DIGEST_EMAIL,
+    time: process.env.DIGEST_TIME || "07:30",
+    profileName: process.env.DIGEST_PROFILE_NAME || "Student",
+  });
+
+  return envConfig;
+}
+
 function startDailyDigestScheduler() {
   setInterval(async () => {
-    if (!fs.existsSync(digestConfigPath)) return;
-
-    const config = parseJson(fs.readFileSync(digestConfigPath, "utf8"));
+    const config = readDigestConfig();
     if (!config?.time) return;
 
     const now = new Date();
-    const currentTime = now.toTimeString().slice(0, 5);
-    const todayKey = now.toISOString().slice(0, 10);
     const state = fs.existsSync(digestStatePath)
       ? parseJson(fs.readFileSync(digestStatePath, "utf8"))
       : {};
 
-    if (currentTime !== config.time || state.lastSentDate === todayKey) return;
+    if (!shouldSendDigestNow(config, state, now)) return;
 
     try {
-      await buildAndDeliverDigest(config, "daily-schedule");
-      const state = readDigestState();
-      fs.writeFileSync(digestStatePath, JSON.stringify({ ...state, lastSentDate: todayKey }, null, 2));
-      console.log(`Daily focus mail processed for ${todayKey}`);
+      const reason = config.scheduleMode === "interval" ? "interval-test" : "daily-schedule";
+      await buildAndDeliverDigest(config, reason);
+      const updatedState = readDigestState();
+      const todayKey = now.toISOString().slice(0, 10);
+      fs.writeFileSync(
+        digestStatePath,
+        JSON.stringify(
+          {
+            ...updatedState,
+            ...(config.scheduleMode === "interval"
+              ? { lastIntervalSentAt: new Date().toISOString() }
+              : { lastSentDate: todayKey }),
+          },
+          null,
+          2,
+        ),
+      );
+      console.log(`Canvas to-do mail processed for ${reason}`);
     } catch (error) {
       const state = readDigestState();
       fs.writeFileSync(
@@ -756,6 +845,18 @@ function startDailyDigestScheduler() {
       console.error(`Daily focus mail failed: ${error.message}`);
     }
   }, 60_000);
+}
+
+function shouldSendDigestNow(config, state, now) {
+  if (config.scheduleMode === "interval") {
+    const minutes = Math.max(1, Number(config.intervalMinutes || 2));
+    const lastSent = state.lastIntervalSentAt ? new Date(state.lastIntervalSentAt).getTime() : 0;
+    return !lastSent || now.getTime() - lastSent >= minutes * 60_000;
+  }
+
+  const currentTime = now.toTimeString().slice(0, 5);
+  const todayKey = now.toISOString().slice(0, 10);
+  return currentTime === config.time && state.lastSentDate !== todayKey;
 }
 
 function readDigestState() {

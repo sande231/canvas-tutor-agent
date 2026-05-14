@@ -8,3 +8,17 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
+      - key: RESEND_API_KEY
+        sync: false
+      - key: EMAIL_FROM
+        sync: false
+      - key: CANVAS_BASE_URL
+        sync: false
+      - key: CANVAS_TOKEN
+        sync: false
+      - key: DIGEST_EMAIL
+        sync: false
+      - key: DIGEST_TIME
+        value: "07:30"
+      - key: DIGEST_PROFILE_NAME
+        sync: false

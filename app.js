@@ -446,8 +446,18 @@ async function fetchCourseDiscussions(courseId) {
 
 async function hydrateModuleItem(courseId, moduleName, item) {
   const baseItem = normalizeModuleItem(moduleName, item);
+  const apiPath = canvasApiPathFromUrl(baseItem.apiUrl);
 
   try {
+    if (baseItem.type === "Page" && !baseItem.pageUrl && apiPath) {
+      const page = await canvasApiFetch(canvasConnection.baseUrl, canvasConnection.token, apiPath);
+      return {
+        ...baseItem,
+        title: page.title || baseItem.title,
+        summary: stripHtml(page.body || ""),
+      };
+    }
+
     if (baseItem.type === "Page" && baseItem.pageUrl) {
       const page = await canvasApiFetch(
         canvasConnection.baseUrl,
@@ -461,12 +471,30 @@ async function hydrateModuleItem(courseId, moduleName, item) {
       };
     }
 
+    if (baseItem.type === "Assignment" && !baseItem.contentId && apiPath) {
+      const assignment = await canvasApiFetch(canvasConnection.baseUrl, canvasConnection.token, apiPath);
+      return {
+        ...baseItem,
+        title: assignment.name || baseItem.title,
+        summary: stripHtml(assignment.description || ""),
+      };
+    }
+
     if (baseItem.type === "Assignment" && baseItem.contentId) {
       const assignment = await fetchAssignmentDetail(courseId, baseItem.contentId);
       return {
         ...baseItem,
         title: assignment.name || baseItem.title,
         summary: assignment.description || "",
+      };
+    }
+
+    if (baseItem.type === "Discussion" && !baseItem.contentId && apiPath) {
+      const discussion = await canvasApiFetch(canvasConnection.baseUrl, canvasConnection.token, apiPath);
+      return {
+        ...baseItem,
+        title: discussion.title || baseItem.title,
+        summary: stripHtml(discussion.message || ""),
       };
     }
 
@@ -483,6 +511,15 @@ async function hydrateModuleItem(courseId, moduleName, item) {
       };
     }
 
+    if (baseItem.type === "Quiz" && !baseItem.contentId && apiPath) {
+      const quiz = await canvasApiFetch(canvasConnection.baseUrl, canvasConnection.token, apiPath);
+      return {
+        ...baseItem,
+        title: quiz.title || baseItem.title,
+        summary: stripHtml(quiz.description || ""),
+      };
+    }
+
     if (baseItem.type === "Quiz" && baseItem.contentId) {
       const quiz = await canvasApiFetch(
         canvasConnection.baseUrl,
@@ -496,8 +533,13 @@ async function hydrateModuleItem(courseId, moduleName, item) {
       };
     }
 
-    if (baseItem.type === "File" && baseItem.contentId) {
-      const fileText = await canvasFileTextFetch(canvasConnection.baseUrl, canvasConnection.token, baseItem.contentId);
+    if (baseItem.type === "File" && (baseItem.contentId || apiPath)) {
+      const fileText = await canvasFileTextFetch(
+        canvasConnection.baseUrl,
+        canvasConnection.token,
+        baseItem.contentId,
+        apiPath,
+      );
       return {
         ...baseItem,
         title: fileText.title || baseItem.title,
@@ -523,9 +565,17 @@ function normalizeModuleItem(moduleName, item) {
     contentId: item.content_id,
     pageUrl: item.page_url || "",
     htmlUrl: item.html_url || item.external_url || "",
+    apiUrl: item.url || "",
     moduleName,
     summary: "",
   };
+}
+
+function canvasApiPathFromUrl(url) {
+  const value = String(url || "");
+  const apiIndex = value.indexOf("/api/v1/");
+  if (apiIndex === -1) return "";
+  return value.slice(apiIndex);
 }
 
 async function fetchAssignmentDetail(courseId, assignmentId) {
@@ -2081,7 +2131,7 @@ async function canvasProxyFetch(baseUrl, token, path) {
   return payload;
 }
 
-async function canvasFileTextFetch(baseUrl, token, fileId) {
+async function canvasFileTextFetch(baseUrl, token, fileId, apiPath = "") {
   if (!isLocalHttp()) {
     return {
       title: "Canvas file",
@@ -2096,7 +2146,7 @@ async function canvasFileTextFetch(baseUrl, token, fileId) {
     headers: {
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ baseUrl, token, fileId }),
+    body: JSON.stringify({ baseUrl, token, fileId, apiPath }),
   });
   const payload = await response.json().catch(() => ({}));
 
@@ -2170,6 +2220,11 @@ function canvasPlannerItemToNote(item, index) {
 }
 
 function runAction(action) {
+  if (action === "project-agent") {
+    showResponse("Project Agent", renderProjectAgent());
+    return;
+  }
+
   const selected = getSelectedNote();
   if (!selected) {
     showResponse(
@@ -2261,6 +2316,93 @@ function runAction(action) {
   const result = responses[action]();
   responseTitle.textContent = result.title;
   responseBody.innerHTML = result.body;
+}
+
+function renderProjectAgent() {
+  const connected = Boolean(canvasConnection.profile);
+  const course = activeCourseContext?.course;
+  const modules = activeCourseContext?.modules || [];
+  const moduleItems = modules.flatMap((module) => module.items.map((item) => ({ ...item, moduleName: module.name })));
+  const hydratedModules = modules.filter((module) => module.hydrated).length;
+  const readableItems = moduleItems.filter((item) => hasReadableStudyText(item));
+  const blockedItems = moduleItems
+    .filter((item) => item.type === "File" && !hasReadableStudyText(item))
+    .slice(0, 6);
+
+  return `
+    <div class="coach-section">
+      <h3>What This Project Is</h3>
+      <div class="explain-box">
+        <p>This is your personal Canvas Tutor Agent. The browser app shows courses, modules, assignments, flashcards, quizzes, and study plans. The local Node server safely talks to Canvas, downloads allowed files, reads student materials, and sends daily focus mail through Resend.</p>
+      </div>
+    </div>
+    <div class="coach-section">
+      <h3>How The Agent Works</h3>
+      <ol>
+        <li>The app connects to Canvas with your Canvas URL and access token.</li>
+        <li>The Node proxy calls Canvas APIs so the browser does not get blocked by CORS.</li>
+        <li>When you select a course, it loads assignments and module outlines quickly.</li>
+        <li>When you study a module, it opens the actual Canvas item API URLs and tries to read pages, files, notebooks, zips, PDFs, DOCX, PPTX, code, and text files.</li>
+        <li>Flashcards and MCQs are generated only from readable text, so it avoids fake title-based questions.</li>
+      </ol>
+    </div>
+    <div class="coach-section">
+      <h3>Current Diagnosis</h3>
+      <div class="map">
+        <div class="study-card">
+          <strong>Canvas connection</strong>
+          <span>${connected ? "Connected" : "Not connected"}</span>
+          <p>${connected ? `Connected as ${canvasConnection.profile?.name || canvasConnection.profile?.short_name || "Canvas user"}.` : "Connect Canvas first so the agent can inspect courses and files."}</p>
+        </div>
+        <div class="study-card">
+          <strong>Active course</strong>
+          <span>${course ? escapeHtml(course.name) : "No course selected"}</span>
+          <p>${course ? `${modules.length} module${modules.length === 1 ? "" : "s"} loaded. ${hydratedModules} deeply read so far.` : "Choose a course after connecting Canvas."}</p>
+        </div>
+        <div class="study-card">
+          <strong>Readable material</strong>
+          <span>${readableItems.length} readable item${readableItems.length === 1 ? "" : "s"}</span>
+          <p>${readableItems.length ? "The quiz and flashcard agent can use these readable items." : "No readable module body text has been found yet. Click Study Module or Make Quiz on a module to trigger deep reading."}</p>
+        </div>
+      </div>
+    </div>
+    <div class="coach-section">
+      <h3>Fixes Already Built</h3>
+      <ul>
+        <li>Follows Canvas module item API URLs when page/file IDs are missing.</li>
+        <li>Reads zip files, notebooks, code files, text files, PDFs, DOCX, and PPTX when Canvas allows downloads.</li>
+        <li>Shows <strong>What The App Could Read</strong> so you can see exactly which files are blocked or readable.</li>
+        <li>Stops creating fake quiz questions from only module/file titles.</li>
+      </ul>
+    </div>
+    <div class="coach-section">
+      <h3>Files To Check Next</h3>
+      ${
+        blockedItems.length
+          ? blockedItems
+              .map(
+                (item) => `
+                  <div class="module-row">
+                    <strong>${escapeHtml(item.title)}</strong>
+                    <span>${escapeHtml(`${item.moduleName} · ${moduleItemLabel(item)}`)}</span>
+                    <p>${escapeHtml(item.summary || "Canvas has not exposed readable file text yet. Try the same module again on the latest local server, then check What The App Could Read.")}</p>
+                  </div>
+                `,
+              )
+              .join("")
+          : "<p>No blocked files found in the currently inspected course. If a module still fails, run Make Quiz and read the source report.</p>"
+      }
+    </div>
+    <div class="coach-section">
+      <h3>How To Work From Here</h3>
+      <ol>
+        <li>Connect Canvas.</li>
+        <li>Select a course.</li>
+        <li>Click <strong>Make Quiz</strong> or <strong>Generate Flashcards</strong> for one module.</li>
+        <li>Read <strong>What The App Could Read</strong>. If it says readable, questions should come from that content. If not, the issue is Canvas access, scanned content, or unsupported file format.</li>
+      </ol>
+    </div>
+  `;
 }
 
 function startFocusSprint() {
