@@ -72,6 +72,7 @@ Each course also has **Assignment Coach**:
 Each selected course also shows **Select Module**:
 
 - Pick a Canvas module
+- Load the course module outline quickly before deeply reading large module files
 - Study the selected Canvas module
 - Show how many module items were scanned and how many exposed readable content
 - Open Canvas module files through the local proxy when Canvas allows downloads

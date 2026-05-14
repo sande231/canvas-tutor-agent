@@ -323,7 +323,7 @@ async function fetchCourseModules(courseId) {
 
   if (!Array.isArray(modules)) return [];
 
-  const hydratedModules = [];
+  const courseModules = [];
 
   for (const module of modules) {
     const itemParams = new URLSearchParams({ per_page: "100" });
@@ -332,21 +332,19 @@ async function fetchCourseModules(courseId) {
       canvasConnection.token,
       `/api/v1/courses/${courseId}/modules/${module.id}/items?${itemParams.toString()}`,
     );
-    const items = [];
 
-    for (const item of Array.isArray(moduleItems) ? moduleItems : []) {
-      items.push(await hydrateModuleItem(courseId, module.name || "Untitled module", item));
-    }
-
-    hydratedModules.push({
+    courseModules.push({
       id: module.id,
       name: module.name || "Untitled module",
       position: module.position || 0,
-      items,
+      hydrated: false,
+      items: (Array.isArray(moduleItems) ? moduleItems : []).map((item) =>
+        normalizeModuleItem(module.name || "Untitled module", item),
+      ),
     });
   }
 
-  return hydratedModules;
+  return courseModules;
 }
 
 async function fetchCoursePostedNotes(courseId) {
@@ -447,16 +445,7 @@ async function fetchCourseDiscussions(courseId) {
 }
 
 async function hydrateModuleItem(courseId, moduleName, item) {
-  const baseItem = {
-    id: item.id,
-    title: item.title || item.type || "Module item",
-    type: item.type || "Item",
-    contentId: item.content_id,
-    pageUrl: item.page_url || "",
-    htmlUrl: item.html_url || item.external_url || "",
-    moduleName,
-    summary: "",
-  };
+  const baseItem = normalizeModuleItem(moduleName, item);
 
   try {
     if (baseItem.type === "Page" && baseItem.pageUrl) {
@@ -524,6 +513,19 @@ async function hydrateModuleItem(courseId, moduleName, item) {
   }
 
   return baseItem;
+}
+
+function normalizeModuleItem(moduleName, item) {
+  return {
+    id: item.id,
+    title: item.title || item.type || "Module item",
+    type: item.type || "Item",
+    contentId: item.content_id,
+    pageUrl: item.page_url || "",
+    htmlUrl: item.html_url || item.external_url || "",
+    moduleName,
+    summary: "",
+  };
 }
 
 async function fetchAssignmentDetail(courseId, assignmentId) {
@@ -666,14 +668,9 @@ function bindStudyAreaActions(course, assignments, modules, postedNotes = []) {
   });
 }
 
-function generateModuleNotes(course, modules, moduleId) {
-  const module = modules.find((item) => String(item.id) === String(moduleId));
+async function generateModuleNotes(course, modules, moduleId) {
+  const module = await hydrateSelectedModule(course, modules, moduleId, "Studying Module");
   if (!module) return;
-
-  showResponse(
-    "Studying Module",
-    `<p>Scanning <strong>${escapeHtml(module.name)}</strong> and building notes from Canvas module items.</p>`,
-  );
   const analysis = analyzeModule(module);
   const note = {
     id: `module-note-${course.id}-${module.id}`,
@@ -696,19 +693,39 @@ function generateModuleNotes(course, modules, moduleId) {
   bindModuleNoteActions(course, module);
 }
 
-function generateModuleQuiz(course, modules, moduleId) {
-  const module = modules.find((item) => String(item.id) === String(moduleId));
+async function generateModuleQuiz(course, modules, moduleId) {
+  const module = await hydrateSelectedModule(course, modules, moduleId, "Building Module Quiz");
   if (!module) return;
 
   showResponse("Module MCQ Quiz", renderModuleQuiz(course, module));
 }
 
-function generateModuleFlashcards(course, modules, moduleId) {
-  const module = modules.find((item) => String(item.id) === String(moduleId));
+async function generateModuleFlashcards(course, modules, moduleId) {
+  const module = await hydrateSelectedModule(course, modules, moduleId, "Building Flashcards");
   if (!module) return;
 
   showResponse("Module Flashcards", renderModuleFlashcards(course, module));
   bindModuleNoteActions(course, module);
+}
+
+async function hydrateSelectedModule(course, modules, moduleId, title) {
+  const module = modules.find((item) => String(item.id) === String(moduleId));
+  if (!module) return null;
+  if (module.hydrated) return module;
+
+  showResponse(
+    title,
+    `<p>Opening <strong>${escapeHtml(module.name)}</strong> and reading its Canvas pages, files, quizzes, and assignments now.</p>`,
+  );
+
+  const hydratedItems = [];
+  for (const item of module.items) {
+    hydratedItems.push(await hydrateModuleItem(course.id, module.name, item));
+  }
+
+  module.items = hydratedItems;
+  module.hydrated = true;
+  return module;
 }
 
 function renderModuleNotes(course, module, analysis = analyzeModule(module)) {
