@@ -584,6 +584,31 @@ textarea:focus {
   font-size: 0.9rem;
 }
 
+.assignment-workspace {
+  display: grid;
+  gap: 10px;
+}
+
+.workspace-card {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  background: #f8fafc;
+  border: 1px solid #dbe4ee;
+  border-left: 4px solid var(--violet);
+  border-radius: 6px;
+}
+
+.workspace-card strong {
+  color: #273048;
+}
+
+.workspace-card p,
+.workspace-card li {
+  color: #42516a;
+  font-size: 0.88rem;
+}
+
 .rubric-row {
   display: grid;
   gap: 5px;

@@ -1443,6 +1443,7 @@ function findRelatedPostedNotes(assignment, postedNotes) {
 function renderAssignmentCoach(course, assignment, relatedItems, relatedNotes = []) {
   const steps = buildAssignmentSteps(assignment, relatedItems);
   const explanation = explainAssignment(assignment, relatedItems, relatedNotes);
+  const workspace = buildAssignmentWorkspace(assignment, relatedItems, relatedNotes);
   const rubricRows = assignment.rubric?.length
     ? assignment.rubric
         .slice(0, 4)
@@ -1468,6 +1469,39 @@ function renderAssignmentCoach(course, assignment, relatedItems, relatedNotes = 
       <h3>What This Assignment Means</h3>
       <div class="explain-box">
         <p>${escapeHtml(explanation)}</p>
+      </div>
+    </div>
+    <div class="coach-section">
+      <h3>Assignment Workspace</h3>
+      <div class="assignment-workspace">
+        <div class="workspace-card">
+          <strong>Understand First</strong>
+          <p>${escapeHtml(workspace.understand)}</p>
+        </div>
+        <div class="workspace-card">
+          <strong>Do The Work In Parts</strong>
+          <ol>${workspace.parts.map((part) => `<li>${escapeHtml(part)}</li>`).join("")}</ol>
+        </div>
+        <div class="workspace-card">
+          <strong>${escapeHtml(workspace.quizTitle)}</strong>
+          <ol>${workspace.quizPrep.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ol>
+        </div>
+      </div>
+    </div>
+    <div class="coach-section">
+      <h3>Practice Questions</h3>
+      <div class="map">
+        ${workspace.practiceQuestions
+          .map(
+            (question) => `
+              <div class="study-card">
+                <strong>${escapeHtml(question.question)}</strong>
+                <span>${escapeHtml(question.source)}</span>
+                <p>${escapeHtml(question.answer)}</p>
+              </div>
+            `,
+          )
+          .join("")}
       </div>
     </div>
     <div class="coach-section">
@@ -1511,6 +1545,10 @@ function renderAssignmentCoach(course, assignment, relatedItems, relatedNotes = 
       <ol>${steps.map((step) => `<li>${escapeHtml(step)}</li>`).join("")}</ol>
     </div>
     <div class="coach-section">
+      <h3>Before You Submit</h3>
+      <ol>${workspace.checklist.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ol>
+    </div>
+    <div class="coach-section">
       <h3>Rubric / Full Credit Clues</h3>
       <div class="map">${rubricRows}</div>
     </div>
@@ -1519,6 +1557,106 @@ function renderAssignmentCoach(course, assignment, relatedItems, relatedNotes = 
       <button id="start-assignment-sprint" type="button">Start Sprint</button>
     </div>
   `;
+}
+
+function buildAssignmentWorkspace(assignment, relatedItems, relatedNotes = []) {
+  const type = assignmentType(assignment);
+  const descriptionFacts = splitSentences(assignment.description || "")
+    .filter((sentence) => sentence.length > 35)
+    .slice(0, 4);
+  const resourceItems = relatedItems.filter((item) => item.summary || item.title).slice(0, 4);
+  const firstResource = resourceItems[0]?.title || "the most relevant Canvas module item";
+  const secondResource = resourceItems[1]?.title || "your assignment instructions";
+  const noteHint = relatedNotes[0]?.title ? ` Also check posted note: ${relatedNotes[0].title}.` : "";
+
+  const understand = descriptionFacts.length
+    ? `In plain language, this assignment is asking you to complete the task described in Canvas and prove you understand these details: ${descriptionFacts.map((fact) => shorten(fact, 90)).join(" ")}${noteHint}`
+    : `In plain language, this assignment is asking you to read the Canvas instructions, connect them to ${firstResource}, complete the required work, and check your answer before submitting.${noteHint}`;
+
+  const partsByType = {
+    essay: [
+      "Part 1: Write the main claim or answer in one clear sentence.",
+      `Part 2: Pull evidence or examples from ${firstResource} and ${secondResource}.`,
+      "Part 3: Draft the response, then revise for clarity, citation, and rubric details.",
+    ],
+    quiz: [
+      `Part 1: Review ${firstResource} and write down the ideas you cannot explain yet.`,
+      "Part 2: Make practice questions before opening the quiz.",
+      "Part 3: Take the quiz when you can answer without looking at notes.",
+    ],
+    discussion: [
+      "Part 1: Write your answer or opinion in one direct sentence.",
+      `Part 2: Add one example from ${firstResource}.`,
+      "Part 3: End with a useful question or reply point for classmates.",
+    ],
+    lab: [
+      "Part 1: Identify the goal, input, method, and expected output.",
+      `Part 2: Follow the steps while checking examples from ${firstResource}.`,
+      "Part 3: Explain what happened, what the result means, and what you would fix.",
+    ],
+    general: [
+      "Part 1: Understand the instructions and rewrite the task in your own words.",
+      `Part 2: Use ${firstResource} to complete the hardest requirement first.`,
+      "Part 3: Check the final work against the assignment description and rubric.",
+    ],
+  };
+
+  const quizPrep = resourceItems.length
+    ? resourceItems.slice(0, 5).map((item) => `Explain this without notes: ${item.title}${item.summary ? ` - ${shorten(firstUsefulSentence(item.summary) || item.summary, 90)}` : ""}`)
+    : [
+        "Turn the assignment title into three questions.",
+        "Define every important word in the instructions.",
+        "Explain the assignment goal out loud before starting.",
+      ];
+
+  const practiceQuestions = buildAssignmentPracticeQuestions(assignment, resourceItems, descriptionFacts);
+  const checklist = [
+    "I can explain what the assignment is asking in my own words.",
+    `I reviewed ${firstResource} before working.`,
+    "I answered every required part, not only the easiest part.",
+    assignment.rubric?.length ? "I compared my work against each rubric item." : "I used the assignment description as my checklist.",
+    assignment.dueAt ? `I am ready to submit before ${formatDate(assignment.dueAt)}.` : "I set my own submit time so this does not drift.",
+  ];
+
+  return {
+    understand,
+    parts: partsByType[type] || partsByType.general,
+    quizTitle: type === "quiz" ? "Quiz Prep" : "Check Your Understanding",
+    quizPrep,
+    practiceQuestions,
+    checklist,
+  };
+}
+
+function buildAssignmentPracticeQuestions(assignment, resourceItems, descriptionFacts) {
+  const questions = [];
+
+  descriptionFacts.slice(0, 3).forEach((fact) => {
+    questions.push({
+      question: `What is this instruction asking you to do: ${shorten(fact, 95)}?`,
+      answer: "Restate it as one action you can complete, then find the matching requirement in your work.",
+      source: "Assignment instructions",
+    });
+  });
+
+  resourceItems.slice(0, 4).forEach((item) => {
+    const answer = item.summary
+      ? firstUsefulSentence(item.summary) || shorten(item.summary, 140)
+      : `Open ${item.title} and connect its main idea to the assignment.`;
+    questions.push({
+      question: `How does ${item.title} help with this assignment?`,
+      answer,
+      source: item.moduleName ? `${item.moduleName} · ${moduleItemLabel(item)}` : moduleItemLabel(item),
+    });
+  });
+
+  questions.push({
+    question: `What would a complete answer for ${assignment.name} need to include?`,
+    answer: "It should include the required task, the related course concept, any evidence/example/code requested, and a final check against the rubric or instructions.",
+    source: "Completion check",
+  });
+
+  return questions.slice(0, 6);
 }
 
 function buildAssignmentSteps(assignment, relatedItems) {

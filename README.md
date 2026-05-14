@@ -63,6 +63,8 @@ Each course also has **Assignment Coach**:
 - Matches useful module material to the assignment
 - Shows related posted notes to review before starting
 - Explains the assignment in plain language
+- Builds an assignment workspace with Understand First, Do The Work In Parts, Quiz Prep, and Before You Submit sections
+- Creates practice questions from assignment instructions and related module material
 - Builds a step-by-step assignment plan
 - Shows rubric/full-credit clues when Canvas exposes a rubric
 - Can add the plan to the canvas or start a Focus Sprint for that assignment
