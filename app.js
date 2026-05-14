@@ -881,6 +881,10 @@ function renderModuleQuiz(course, module) {
         }
       </div>
     </div>
+    <div class="coach-section">
+      <h3>What The App Could Read</h3>
+      <div class="map">${renderModuleSourceReport(module)}</div>
+    </div>
     <div class="explain-box">
       <p>${escapeHtml(analysis.studyPlan)}</p>
     </div>
@@ -923,11 +927,39 @@ function renderModuleFlashcards(course, module) {
         <li>Retake only the missed cards until you can explain them without looking.</li>
       </ol>
     </div>
+    <div class="coach-section">
+      <h3>What The App Could Read</h3>
+      <div class="map">${renderModuleSourceReport(module)}</div>
+    </div>
     <div class="connect-actions">
       <button class="primary-btn" type="button" id="flashcards-to-quiz">Make MCQ Quiz</button>
       <button type="button" id="flashcards-to-notes">Study Module</button>
     </div>
   `;
+}
+
+function renderModuleSourceReport(module) {
+  if (!module.items.length) return "<p>No module items were returned by Canvas.</p>";
+
+  return module.items
+    .slice(0, 12)
+    .map((item) => {
+      const readable = hasReadableStudyText(item);
+      const status = readable ? "Readable" : "Not readable yet";
+      const detail = readable
+        ? shorten(item.summary, 120)
+        : item.summary
+          ? shorten(item.summary, 150)
+          : "Canvas returned the item title, but no readable body text or downloadable file text.";
+      return `
+        <div class="module-row">
+          <strong>${escapeHtml(item.title)}</strong>
+          <span>${escapeHtml(`${status} · ${moduleItemLabel(item)}`)}</span>
+          <p>${escapeHtml(detail)}</p>
+        </div>
+      `;
+    })
+    .join("");
 }
 
 function bindModuleNoteActions(course, module) {

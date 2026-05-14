@@ -895,7 +895,7 @@ function processDownloadedFile(title, contentType, buffer) {
   }
 
   if (isPdfFile(title, contentType, buffer)) {
-    const pdfText = extractPdfText(buffer);
+    const pdfText = extractPdfText(buffer) || extractTextWithMetadata(title, buffer);
     return {
       title,
       text: pdfText.slice(0, 20000),
@@ -1000,13 +1000,17 @@ function processOfficeDocument(title, contentType, buffer) {
     .map((entry) => extractOfficeXmlText(entry.content.toString("utf8")))
     .filter(Boolean);
 
+  const xmlText = chunks.join("\n\n");
+  const metadataText = xmlText.trim() ? "" : extractTextWithMetadata(title, buffer);
+  const text = xmlText || metadataText;
+
   return {
     title,
-    text: chunks.join("\n\n").slice(0, 24000),
-    readable: Boolean(chunks.join("").trim()),
+    text: text.slice(0, 24000),
+    readable: Boolean(text.trim()),
     contentType,
     sourceKind: isPptx ? "slides" : "docx",
-    reason: chunks.length ? "" : "Office file opened, but no readable document or slide text was found.",
+    reason: text.trim() ? "" : "Office file opened, but no readable document or slide text was found.",
   };
 }
 
@@ -1126,9 +1130,39 @@ function extractImageTextWithOcr(title, buffer) {
   }
 }
 
+function extractTextWithMetadata(title, buffer) {
+  if (!metadataToolAvailable()) return "";
+
+  const extension = path.extname(title || "").toLowerCase() || ".bin";
+  const tempPath = path.join(os.tmpdir(), `canvas-tutor-md-${Date.now()}${extension}`);
+  try {
+    fs.writeFileSync(tempPath, buffer);
+    const output = String(execFileSync("mdls", ["-raw", "-name", "kMDItemTextContent", tempPath], { timeout: 10000 }) || "");
+    if (!output.trim() || output.trim() === "(null)") return "";
+    return output.replace(/\s+/g, " ").trim();
+  } catch {
+    return "";
+  } finally {
+    try {
+      fs.unlinkSync(tempPath);
+    } catch {
+      // Ignore cleanup failures for temporary metadata files.
+    }
+  }
+}
+
 function ocrToolAvailable() {
   try {
     execFileSync("tesseract", ["--version"], { stdio: "ignore", timeout: 3000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function metadataToolAvailable() {
+  try {
+    execFileSync("mdls", ["-name", "kMDItemTextContent", __filename], { stdio: "ignore", timeout: 3000 });
     return true;
   } catch {
     return false;
