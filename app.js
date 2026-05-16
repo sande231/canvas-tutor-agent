@@ -565,17 +565,25 @@ async function hydrateModuleItem(courseId, moduleName, item) {
 
 function normalizeModuleItem(moduleName, item) {
   const contentDetails = item.content_details || {};
-  const contentId = item.content_id || contentDetails.id || "";
-  const apiUrl = item.url || "";
+  const candidateUrls = [
+    item.url,
+    contentDetails.url,
+    contentDetails.file_url,
+    contentDetails.html_url,
+    item.html_url,
+    item.external_url,
+  ];
+  const contentId = item.content_id || contentDetails.id || firstCanvasFileId(candidateUrls) || "";
+  const apiUrl = item.url || contentDetails.url || "";
   return {
     id: item.id,
     title: item.title || item.type || "Module item",
     type: item.type || "Item",
     contentId,
     pageUrl: item.page_url || contentDetails.page_url || "",
-    htmlUrl: item.html_url || item.external_url || "",
+    htmlUrl: item.html_url || item.external_url || contentDetails.html_url || contentDetails.url || "",
     apiUrl,
-    readDebug: moduleItemDebugPath({ ...item, content_id: contentId, url: apiUrl }),
+    readDebug: moduleItemDebugPath({ ...item, content_id: contentId, url: apiUrl, candidateUrls }),
     moduleName,
     summary: "",
   };
@@ -587,7 +595,30 @@ function moduleItemDebugPath(item) {
   if (apiPath) parts.push(apiPath);
   if (item.content_id) parts.push(`content_id:${item.content_id}`);
   if (item.page_url || item.content_details?.page_url) parts.push(`page:${item.page_url || item.content_details.page_url}`);
+  const urls = Array.isArray(item.candidateUrls) ? item.candidateUrls : [];
+  urls.map(safeCanvasPath).filter(Boolean).forEach((path) => {
+    if (!parts.includes(path)) parts.push(path);
+  });
   return parts.join(" | ");
+}
+
+function firstCanvasFileId(urls) {
+  for (const url of urls) {
+    const match = String(url || "").match(/(?:\/api\/v1)?(?:\/courses\/\d+)?\/files\/(\d+)/);
+    if (match) return match[1];
+  }
+  return "";
+}
+
+function safeCanvasPath(url) {
+  const value = String(url || "");
+  if (!value) return "";
+  try {
+    const parsed = new URL(value);
+    return parsed.pathname;
+  } catch {
+    return value.startsWith("/") ? value.split("?")[0] : "";
+  }
 }
 
 async function fetchModulePageBody(courseId, baseItem, apiPath) {
