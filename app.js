@@ -327,6 +327,7 @@ async function fetchCourseModules(courseId) {
 
   for (const module of modules) {
     const itemParams = new URLSearchParams({ per_page: "100" });
+    itemParams.append("include[]", "content_details");
     const moduleItems = await canvasApiFetch(
       canvasConnection.baseUrl,
       canvasConnection.token,
@@ -449,25 +450,15 @@ async function hydrateModuleItem(courseId, moduleName, item) {
   const apiPath = canvasApiPathFromUrl(baseItem.apiUrl);
 
   try {
-    if (baseItem.type === "Page" && !baseItem.pageUrl && apiPath) {
-      const page = await canvasApiFetch(canvasConnection.baseUrl, canvasConnection.token, apiPath);
+    if (baseItem.type === "Page") {
+      const page = await fetchModulePageBody(courseId, baseItem, apiPath);
       return {
         ...baseItem,
         title: page.title || baseItem.title,
-        summary: stripHtml(page.body || ""),
-      };
-    }
-
-    if (baseItem.type === "Page" && baseItem.pageUrl) {
-      const page = await canvasApiFetch(
-        canvasConnection.baseUrl,
-        canvasConnection.token,
-        `/api/v1/courses/${courseId}/pages/${encodeURIComponent(baseItem.pageUrl)}`,
-      );
-      return {
-        ...baseItem,
-        title: page.title || baseItem.title,
-        summary: stripHtml(page.body || ""),
+        summary: page.summary,
+        readable: Boolean(page.summary),
+        sourceKind: "page",
+        readDebug: page.debug,
       };
     }
 
@@ -559,18 +550,104 @@ async function hydrateModuleItem(courseId, moduleName, item) {
 }
 
 function normalizeModuleItem(moduleName, item) {
+  const contentDetails = item.content_details || {};
   return {
     id: item.id,
     title: item.title || item.type || "Module item",
     type: item.type || "Item",
     contentId: item.content_id,
-    pageUrl: item.page_url || "",
+    pageUrl: item.page_url || contentDetails.page_url || "",
     htmlUrl: item.html_url || item.external_url || "",
     apiUrl: item.url || "",
     readDebug: "",
     moduleName,
     summary: "",
   };
+}
+
+async function fetchModulePageBody(courseId, baseItem, apiPath) {
+  const pageSlugs = uniqueValues([
+    baseItem.pageUrl,
+    pageSlugFromApiPath(apiPath),
+    pageSlugFromCanvasUrl(baseItem.htmlUrl),
+  ]);
+  const debugPaths = [];
+
+  for (const slug of pageSlugs) {
+    const result = await fetchCanvasPageBySlug(courseId, slug);
+    debugPaths.push(result.debug);
+    if (result.summary) return result;
+  }
+
+  if (apiPath) {
+    try {
+      debugPaths.push(apiPath);
+      const itemDetail = await canvasApiFetch(canvasConnection.baseUrl, canvasConnection.token, apiPath);
+      const detailSlugs = uniqueValues([
+        itemDetail.page_url,
+        itemDetail.url,
+        itemDetail.content_details?.page_url,
+        pageSlugFromCanvasUrl(itemDetail.html_url || itemDetail.external_url || ""),
+      ]);
+
+      if (itemDetail.body) {
+        return {
+          title: itemDetail.title || baseItem.title,
+          summary: stripHtml(itemDetail.body || ""),
+          debug: apiPath,
+        };
+      }
+
+      for (const slug of detailSlugs) {
+        const result = await fetchCanvasPageBySlug(courseId, slug);
+        debugPaths.push(result.debug);
+        if (result.summary) return result;
+      }
+    } catch {
+      return {
+        title: baseItem.title,
+        summary: "",
+        debug: debugPaths.filter(Boolean).join(" | ") || apiPath,
+      };
+    }
+  }
+
+  return {
+    title: baseItem.title,
+    summary: "",
+    debug: debugPaths.filter(Boolean).join(" | "),
+  };
+}
+
+async function fetchCanvasPageBySlug(courseId, slug) {
+  const pageSlug = String(slug || "").trim();
+  if (!pageSlug) return { title: "", summary: "", debug: "" };
+
+  const apiPath = `/api/v1/courses/${courseId}/pages/${encodeURIComponent(pageSlug)}`;
+  try {
+    const page = await canvasApiFetch(canvasConnection.baseUrl, canvasConnection.token, apiPath);
+    return {
+      title: page.title || "",
+      summary: stripHtml(page.body || ""),
+      debug: apiPath,
+    };
+  } catch {
+    return { title: "", summary: "", debug: apiPath };
+  }
+}
+
+function pageSlugFromApiPath(apiPath) {
+  const match = String(apiPath || "").match(/\/pages\/([^/?#]+)/);
+  return match ? decodeURIComponent(match[1]) : "";
+}
+
+function pageSlugFromCanvasUrl(url) {
+  const match = String(url || "").match(/\/pages\/([^/?#]+)/);
+  return match ? decodeURIComponent(match[1]) : "";
+}
+
+function uniqueValues(values) {
+  return values.filter(Boolean).filter((value, index, array) => array.indexOf(value) === index);
 }
 
 function canvasApiPathFromUrl(url) {
