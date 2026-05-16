@@ -580,6 +580,21 @@ textarea:focus {
   border-radius: 6px;
 }
 
+.file-import-row label,
+.file-import-row span {
+  display: block;
+  margin-bottom: 6px;
+  color: #31463d;
+  font-size: 0.86rem;
+  font-weight: 800;
+}
+
+.file-import-row span {
+  margin: 6px 0 0;
+  color: #617167;
+  font-weight: 700;
+}
+
 .ai-action-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

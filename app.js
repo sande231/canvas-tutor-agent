@@ -1133,7 +1133,9 @@ function renderDownloadedFileImport(mode) {
     <div class="coach-section">
       <h3>Add Downloaded Canvas File</h3>
       <div class="file-import-row">
+        <label for="downloaded-module-file-${mode}">Choose Canvas file from Downloads</label>
         <input type="file" id="downloaded-module-file-${mode}" data-module-file-import="${mode}" accept=".pdf,.zip,.ipynb,.pynb,.txt,.md,.csv,.json,.py,.js,.ts,.java,.c,.cpp,.docx,.pptx,image/*,application/pdf,application/zip">
+        <span data-file-import-status>Waiting for a downloaded Canvas file.</span>
       </div>
       <p>Use this when Canvas lets you download the file in your browser but the API does not expose the file id to the tutor.</p>
     </div>
@@ -1188,6 +1190,8 @@ function bindModuleNoteActions(course, module) {
   responseBody.querySelectorAll("[data-module-file-import]").forEach((input) => {
     input.addEventListener("change", () => {
       const file = input.files?.[0];
+      const status = input.closest(".file-import-row")?.querySelector("[data-file-import-status]");
+      if (status) status.textContent = file ? `Selected ${file.name}. Reading now...` : "No file selected.";
       if (file) importDownloadedModuleFile(course, module, file, input.dataset.moduleFileImport || "notes");
     });
   });
@@ -2447,6 +2451,7 @@ async function importDownloadedModuleFile(course, module, file, mode) {
 
   try {
     const payload = await localFileTextFetch(file);
+    const readableCharacters = payload.readable ? String(payload.text || "").length : 0;
     const importedItem = {
       id: `local-file-${Date.now()}`,
       title: payload.title || file.name,
@@ -2463,12 +2468,13 @@ async function importDownloadedModuleFile(course, module, file, mode) {
     module.items = [importedItem, ...module.items.filter((item) => item.title !== importedItem.title)];
     module.hydrated = true;
 
+    const importNotice = renderFileImportNotice(importedItem, readableCharacters, payload.reason || "");
     if (mode === "quiz") {
-      showResponse("Module MCQ Quiz", renderModuleQuiz(course, module));
+      showResponse("Module MCQ Quiz", importNotice + renderModuleQuiz(course, module));
     } else if (mode === "flashcards") {
-      showResponse("Module Flashcards", renderModuleFlashcards(course, module));
+      showResponse("Module Flashcards", importNotice + renderModuleFlashcards(course, module));
     } else {
-      showResponse("Module Study Notes", renderModuleNotes(course, module));
+      showResponse("Module Study Notes", importNotice + renderModuleNotes(course, module));
     }
     bindModuleNoteActions(course, module);
   } catch (error) {
@@ -2477,6 +2483,21 @@ async function importDownloadedModuleFile(course, module, file, mode) {
       `<p>${escapeHtml(error.message || "The tutor could not read this downloaded file.")}</p>`,
     );
   }
+}
+
+function renderFileImportNotice(item, readableCharacters, reason) {
+  const readable = item.readable && readableCharacters > 0;
+  return `
+    <div class="explain-box">
+      <p><strong>${readable ? "File uploaded and read." : "File uploaded, but no readable study text was found."}</strong></p>
+      <p>${escapeHtml(item.title)} · ${escapeHtml(moduleItemLabel(item))} · ${readableCharacters.toLocaleString()} readable characters</p>
+      ${
+        readable
+          ? "<p>You can now use AI Study Guide, AI Flashcards, or AI MCQ Quiz from this uploaded content.</p>"
+          : `<p>${escapeHtml(reason || "Try a text-based PDF, DOCX, PPTX, notebook, source code file, or ZIP with readable files inside.")}</p>`
+      }
+    </div>
+  `;
 }
 
 async function localFileTextFetch(file) {
