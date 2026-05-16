@@ -539,11 +539,25 @@ async function hydrateModuleItem(courseId, moduleName, item) {
           : `${fileText.contentType || "File"} · ${fileText.reason || "Canvas did not expose readable text for this file."}`,
         readable: fileText.readable,
         sourceKind: fileText.sourceKind || "file",
-        readDebug: fileText.debug || "",
+        readDebug: fileText.debug || baseItem.readDebug,
       };
     }
-  } catch {
-    return baseItem;
+
+    if (baseItem.type === "File") {
+      return {
+        ...baseItem,
+        summary: "Canvas module item did not include a file id or file API URL for the tutor app to download.",
+        readable: false,
+        sourceKind: "file",
+      };
+    }
+  } catch (error) {
+    return {
+      ...baseItem,
+      summary: `${baseItem.type} reader failed: ${error.message || "Canvas did not return readable content."}`,
+      readable: false,
+      readDebug: baseItem.readDebug || apiPath,
+    };
   }
 
   return baseItem;
@@ -551,18 +565,29 @@ async function hydrateModuleItem(courseId, moduleName, item) {
 
 function normalizeModuleItem(moduleName, item) {
   const contentDetails = item.content_details || {};
+  const contentId = item.content_id || contentDetails.id || "";
+  const apiUrl = item.url || "";
   return {
     id: item.id,
     title: item.title || item.type || "Module item",
     type: item.type || "Item",
-    contentId: item.content_id,
+    contentId,
     pageUrl: item.page_url || contentDetails.page_url || "",
     htmlUrl: item.html_url || item.external_url || "",
-    apiUrl: item.url || "",
-    readDebug: "",
+    apiUrl,
+    readDebug: moduleItemDebugPath({ ...item, content_id: contentId, url: apiUrl }),
     moduleName,
     summary: "",
   };
+}
+
+function moduleItemDebugPath(item) {
+  const apiPath = canvasApiPathFromUrl(item.url || "");
+  const parts = [];
+  if (apiPath) parts.push(apiPath);
+  if (item.content_id) parts.push(`content_id:${item.content_id}`);
+  if (item.page_url || item.content_details?.page_url) parts.push(`page:${item.page_url || item.content_details.page_url}`);
+  return parts.join(" | ");
 }
 
 async function fetchModulePageBody(courseId, baseItem, apiPath) {
@@ -585,7 +610,7 @@ async function fetchModulePageBody(courseId, baseItem, apiPath) {
       const itemDetail = await canvasApiFetch(canvasConnection.baseUrl, canvasConnection.token, apiPath);
       const detailSlugs = uniqueValues([
         itemDetail.page_url,
-        itemDetail.url,
+        pageSlugFromApiPath(itemDetail.url),
         itemDetail.content_details?.page_url,
         pageSlugFromCanvasUrl(itemDetail.html_url || itemDetail.external_url || ""),
       ]);
