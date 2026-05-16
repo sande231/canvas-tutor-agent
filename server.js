@@ -206,9 +206,9 @@ async function proxyCanvasFileText(request, response) {
       token,
       apiPath.startsWith("/api/v1/") ? apiPath : `/api/v1/files/${encodeURIComponent(fileId)}`,
     );
-    const downloadUrl = file.url || file["url"];
+    const downloadUrls = buildCanvasDownloadUrls(baseUrl, file, fileId);
 
-    if (!downloadUrl) {
+    if (!downloadUrls.length) {
       sendJson(response, 200, {
         title: file.display_name || file.filename || "Canvas file",
         text: "",
@@ -222,12 +222,7 @@ async function proxyCanvasFileText(request, response) {
     const timeout = setTimeout(() => controller.abort(), requestTimeoutMs);
 
     try {
-      const fileResponse = await fetch(downloadUrl, {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-        signal: controller.signal,
-      });
+      const { fileResponse, attemptedUrl } = await fetchFirstDownloadableFile(downloadUrls, token, controller.signal);
       const contentType = fileResponse.headers.get("content-type") || file["content-type"] || "";
       const title = file.display_name || file.filename || "Canvas file";
 
@@ -236,7 +231,9 @@ async function proxyCanvasFileText(request, response) {
           title,
           text: "",
           readable: false,
-          reason: `Canvas file download returned ${fileResponse.status}.`,
+          contentType,
+          reason: `Canvas file download returned ${fileResponse.status} from ${attemptedUrl}.`,
+          debug: safeDownloadDebug(attemptedUrl),
         });
         return;
       }
@@ -256,6 +253,7 @@ async function proxyCanvasFileText(request, response) {
         reason:
           processed.reason ||
           `This file is ${contentType || "not plain text"}. It may need OCR or a DOCX/slides parser to read its full body.`,
+        debug: safeDownloadDebug(attemptedUrl),
       });
     } finally {
       clearTimeout(timeout);
@@ -268,6 +266,62 @@ async function proxyCanvasFileText(request, response) {
       reason: error.message || "Could not read the Canvas file.",
     });
   }
+}
+
+function safeDownloadDebug(url) {
+  if (!url) return "";
+  try {
+    const parsed = new URL(url);
+    return `${parsed.origin}${parsed.pathname}`;
+  } catch {
+    return String(url).split("?")[0];
+  }
+}
+
+function buildCanvasDownloadUrls(baseUrl, file, fileId) {
+  const urls = [];
+  const addUrl = (url) => {
+    if (url && !urls.includes(url)) urls.push(url);
+  };
+  addUrl(file.url || file["url"]);
+
+  const id = file.id || fileId;
+  if (id) {
+    addUrl(`${baseUrl}/files/${encodeURIComponent(id)}/download?download_frd=1`);
+    addUrl(`${baseUrl}/api/v1/files/${encodeURIComponent(id)}/public_url`);
+  }
+
+  return urls;
+}
+
+async function fetchFirstDownloadableFile(urls, token, signal) {
+  let lastResponse = null;
+  let lastUrl = urls[0] || "";
+
+  for (const url of urls) {
+    lastUrl = url;
+    const response = await fetch(url, {
+      headers: {
+        Accept: "*/*",
+        Authorization: `Bearer ${token}`,
+      },
+      redirect: "follow",
+      signal,
+    });
+
+    if (url.includes("/public_url") && response.ok) {
+      const payload = parseJson(await response.text());
+      if (payload.public_url) {
+        urls.push(payload.public_url);
+        continue;
+      }
+    }
+
+    lastResponse = response;
+    if (response.ok) return { fileResponse: response, attemptedUrl: url };
+  }
+
+  return { fileResponse: lastResponse, attemptedUrl: lastUrl };
 }
 
 async function buildAndDeliverDigest(config, reason) {

@@ -548,6 +548,7 @@ async function hydrateModuleItem(courseId, moduleName, item) {
           : `${fileText.contentType || "File"} · ${fileText.reason || "Canvas did not expose readable text for this file."}`,
         readable: fileText.readable,
         sourceKind: fileText.sourceKind || "file",
+        readDebug: fileText.debug || "",
       };
     }
   } catch {
@@ -566,6 +567,7 @@ function normalizeModuleItem(moduleName, item) {
     pageUrl: item.page_url || "",
     htmlUrl: item.html_url || item.external_url || "",
     apiUrl: item.url || "",
+    readDebug: "",
     moduleName,
     summary: "",
   };
@@ -1001,11 +1003,13 @@ function renderModuleSourceReport(module) {
         : item.summary
           ? shorten(item.summary, 150)
           : "Canvas returned the item title, but no readable body text or downloadable file text.";
+      const debug = item.readDebug ? `<p>Download path tried: ${escapeHtml(item.readDebug)}</p>` : "";
       return `
         <div class="module-row">
           <strong>${escapeHtml(item.title)}</strong>
           <span>${escapeHtml(`${status} · ${moduleItemLabel(item)}`)}</span>
           <p>${escapeHtml(detail)}</p>
+          ${debug}
         </div>
       `;
     })
