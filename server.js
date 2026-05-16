@@ -41,6 +41,11 @@ const server = http.createServer(async (request, response) => {
       return;
     }
 
+    if (request.method === "POST" && request.url === "/api/ai-tutor") {
+      await proxyAiTutor(request, response);
+      return;
+    }
+
     if (request.method === "POST" && request.url === "/api/daily-digest/config") {
       await saveDailyDigestConfig(request, response);
       return;
@@ -297,6 +302,140 @@ async function proxyLocalFileText(request, response) {
       reason: error.message || "Could not read this downloaded file.",
     });
   }
+}
+
+async function proxyAiTutor(request, response) {
+  const body = await readJsonBody(request, 3_000_000);
+  const apiKey = String(process.env.OPENAI_API_KEY || "").trim();
+  const model = String(process.env.OPENAI_MODEL || "gpt-5-mini").trim();
+
+  if (!apiKey) {
+    sendJson(response, 200, {
+      configured: false,
+      error: "AI tutor is not configured. Add OPENAI_API_KEY to .env, restart the server, then try again.",
+    });
+    return;
+  }
+
+  const mode = String(body.mode || "study").trim();
+  const courseName = String(body.courseName || "Canvas course").trim();
+  const moduleName = String(body.moduleName || "Canvas module").trim();
+  const canvasContext = String(body.canvasContext || "").slice(0, 5000);
+  const studyText = String(body.studyText || "").slice(0, 45000);
+
+  if (!studyText.trim()) {
+    sendJson(response, 200, {
+      configured: true,
+      error: "AI tutor needs readable study text first. Add downloaded Canvas PDFs, ZIPs, notebooks, or notes, then run AI again.",
+    });
+    return;
+  }
+
+  const prompt = [
+    `Course: ${courseName}`,
+    `Module: ${moduleName}`,
+    `Mode: ${mode}`,
+    "",
+    "Canvas structure:",
+    canvasContext || "No Canvas structure provided.",
+    "",
+    "Readable downloaded/module study content:",
+    studyText,
+  ].join("\n");
+
+  try {
+    const aiResponse = await fetch("https://api.openai.com/v1/responses", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model,
+        instructions: aiTutorInstructions(),
+        input: prompt,
+        max_output_tokens: 2500,
+        text: {
+          format: {
+            type: "json_object",
+          },
+        },
+      }),
+    });
+    const payload = await aiResponse.json().catch(() => ({}));
+
+    if (!aiResponse.ok) {
+      sendJson(response, 200, {
+        configured: true,
+        error: payload.error?.message || `OpenAI returned ${aiResponse.status}.`,
+      });
+      return;
+    }
+
+    const text = extractOpenAiText(payload);
+    const parsed = parseAiTutorJson(text);
+    sendJson(response, 200, {
+      configured: true,
+      model,
+      ...parsed,
+    });
+  } catch (error) {
+    sendJson(response, 200, {
+      configured: true,
+      error: error.message || "AI tutor request failed.",
+    });
+  }
+}
+
+function aiTutorInstructions() {
+  return [
+    "You are Canvas Tutor, a study coach for a college computer science/data science student.",
+    "Use only the provided readable study content and Canvas structure.",
+    "Create real learning material, not generic reminders and not questions about file titles.",
+    "Avoid URLs, citation noise, author/title-only lines, and corrupted PDF fragments.",
+    "Return only valid JSON with this shape:",
+    '{"summary":"...","keyPoints":["..."],"flashcards":[{"front":"...","back":"..."}],"mcq":[{"question":"...","choices":["A","B","C","D"],"answer":"...","explanation":"..."}],"studyPlan":["..."]}',
+    "MCQ choices must be meaningful and plausible. The answer must exactly match one choice.",
+    "Flashcards should test definitions, comparisons, code/data examples, and why concepts matter.",
+  ].join(" ");
+}
+
+function extractOpenAiText(payload) {
+  if (payload.output_text) return payload.output_text;
+  const output = Array.isArray(payload.output) ? payload.output : [];
+  return output
+    .flatMap((item) => Array.isArray(item.content) ? item.content : [])
+    .map((content) => content.text || content.output_text || "")
+    .filter(Boolean)
+    .join("\n");
+}
+
+function parseAiTutorJson(text) {
+  const raw = String(text || "").trim();
+  const jsonText = raw.startsWith("{") ? raw : raw.slice(raw.indexOf("{"), raw.lastIndexOf("}") + 1);
+  const parsed = parseJson(jsonText);
+  return {
+    summary: String(parsed.summary || ""),
+    keyPoints: Array.isArray(parsed.keyPoints) ? parsed.keyPoints.map(String).slice(0, 8) : [],
+    flashcards: Array.isArray(parsed.flashcards)
+      ? parsed.flashcards
+          .map((card) => ({ front: String(card.front || ""), back: String(card.back || "") }))
+          .filter((card) => card.front && card.back)
+          .slice(0, 12)
+      : [],
+    mcq: Array.isArray(parsed.mcq)
+      ? parsed.mcq
+          .map((question) => ({
+            question: String(question.question || ""),
+            choices: Array.isArray(question.choices) ? question.choices.map(String).slice(0, 4) : [],
+            answer: String(question.answer || ""),
+            explanation: String(question.explanation || ""),
+          }))
+          .filter((question) => question.question && question.choices.length === 4 && question.answer)
+          .slice(0, 10)
+      : [],
+    studyPlan: Array.isArray(parsed.studyPlan) ? parsed.studyPlan.map(String).slice(0, 8) : [],
+  };
 }
 
 function safeDownloadDebug(url) {

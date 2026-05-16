@@ -580,6 +580,20 @@ textarea:focus {
   border-radius: 6px;
 }
 
+.ai-action-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.ai-action-grid button {
+  min-height: 40px;
+  color: #ffffff;
+  font-weight: 900;
+  background: #385f78;
+  border-radius: 6px;
+}
+
 .explain-box {
   padding: 12px;
   background: #edf4f7;

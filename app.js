@@ -1137,6 +1137,15 @@ function renderDownloadedFileImport(mode) {
       </div>
       <p>Use this when Canvas lets you download the file in your browser but the API does not expose the file id to the tutor.</p>
     </div>
+    <div class="coach-section">
+      <h3>AI Tutor From Study Content</h3>
+      <div class="ai-action-grid">
+        <button type="button" data-ai-tutor-mode="study">AI Study Guide</button>
+        <button type="button" data-ai-tutor-mode="flashcards">AI Flashcards</button>
+        <button type="button" data-ai-tutor-mode="mcq">AI MCQ Quiz</button>
+      </div>
+      <p>Canvas gives the schedule and module list. Downloaded files give the real study text. AI turns that text into stronger explanations and practice.</p>
+    </div>
   `;
 }
 
@@ -1181,6 +1190,9 @@ function bindModuleNoteActions(course, module) {
       const file = input.files?.[0];
       if (file) importDownloadedModuleFile(course, module, file, input.dataset.moduleFileImport || "notes");
     });
+  });
+  responseBody.querySelectorAll("[data-ai-tutor-mode]").forEach((button) => {
+    button.addEventListener("click", () => runAiTutor(course, module, button.dataset.aiTutorMode || "study"));
   });
 }
 
@@ -2487,6 +2499,133 @@ async function localFileTextFetch(file) {
   }
 
   return payload;
+}
+
+async function runAiTutor(course, module, mode) {
+  const payload = buildAiTutorPayload(course, module, mode);
+  showResponse(
+    "AI Tutor",
+    `<p>Building ${escapeHtml(aiModeLabel(mode))} from readable downloaded files and Canvas module structure.</p>`,
+  );
+
+  try {
+    const response = await fetch("/api/ai-tutor", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+    const result = await response.json().catch(() => ({}));
+
+    if (!response.ok || result.error) {
+      showResponse(
+        "AI Tutor Needs Setup",
+        `<p>${escapeHtml(result.error || "AI tutor could not complete the request.")}</p>
+         <p>Keep using downloaded-file flashcards and quiz while AI is not configured.</p>`,
+      );
+      return;
+    }
+
+    showResponse("AI Tutor", renderAiTutorResult(course, module, result, mode));
+    bindModuleNoteActions(course, module);
+  } catch (error) {
+    showResponse("AI Tutor Failed", `<p>${escapeHtml(error.message || "AI tutor failed.")}</p>`);
+  }
+}
+
+function buildAiTutorPayload(course, module, mode) {
+  const readableItems = module.items.filter((item) => hasReadableStudyText(item));
+  const studyText = readableItems
+    .map((item) => `SOURCE: ${item.title}\nTYPE: ${moduleItemLabel(item)}\n${cleanStudyText(item.summary || "")}`)
+    .join("\n\n---\n\n")
+    .slice(0, 45000);
+  const canvasContext = module.items
+    .map((item) => `${item.title} (${moduleItemLabel(item)})`)
+    .join("\n")
+    .slice(0, 5000);
+
+  return {
+    mode,
+    courseName: course.name,
+    moduleName: module.name,
+    canvasContext,
+    studyText,
+  };
+}
+
+function renderAiTutorResult(course, module, result, mode) {
+  return `
+    <p><strong>${escapeHtml(module.name)}</strong> · ${escapeHtml(course.name)}</p>
+    <div class="course-scan">
+      <strong>Architecture</strong>
+      <span>Canvas API = schedule/module list · Downloaded files = study content · AI = tutor questions</span>
+    </div>
+    <div class="explain-box">
+      <p>${escapeHtml(result.summary || `AI generated ${aiModeLabel(mode)} from your readable module content.`)}</p>
+    </div>
+    <div class="coach-section">
+      <h3>Key Points</h3>
+      ${result.keyPoints?.length ? `<ul>${result.keyPoints.map((point) => `<li>${escapeHtml(point)}</li>`).join("")}</ul>` : "<p>No key points returned.</p>"}
+    </div>
+    <div class="coach-section">
+      <h3>AI Flashcards</h3>
+      <div class="map">
+        ${
+          result.flashcards?.length
+            ? result.flashcards
+                .map((card, index) => `
+                  <div class="flashcard">
+                    <strong>${index + 1}. ${escapeHtml(card.front)}</strong>
+                    <span>${escapeHtml(card.back)}</span>
+                  </div>
+                `)
+                .join("")
+            : "<p>No AI flashcards returned.</p>"
+        }
+      </div>
+    </div>
+    <div class="coach-section">
+      <h3>AI MCQ Quiz</h3>
+      <div class="map">
+        ${
+          result.mcq?.length
+            ? result.mcq.map(renderAiMcqCard).join("")
+            : "<p>No AI MCQ questions returned.</p>"
+        }
+      </div>
+    </div>
+    <div class="coach-section">
+      <h3>Study Plan</h3>
+      ${result.studyPlan?.length ? `<ol>${result.studyPlan.map((step) => `<li>${escapeHtml(step)}</li>`).join("")}</ol>` : "<p>Review the flashcards, then answer the MCQs without looking.</p>"}
+    </div>
+    ${renderDownloadedFileImport(mode)}
+  `;
+}
+
+function renderAiMcqCard(question, index) {
+  return `
+    <div class="mcq-card">
+      <strong>${index + 1}. ${escapeHtml(question.question)}</strong>
+      <div class="mcq-choices">
+        ${question.choices
+          .map((choice, choiceIndex) => `
+            <span class="${choice === question.answer ? "is-correct" : ""}">
+              ${String.fromCharCode(65 + choiceIndex)}. ${escapeHtml(choice)}
+            </span>
+          `)
+          .join("")}
+      </div>
+      <p class="mcq-answer">Correct: ${escapeHtml(question.answer)}</p>
+      <p>${escapeHtml(question.explanation || "Review the source file section for this concept.")}</p>
+    </div>
+  `;
+}
+
+function aiModeLabel(mode) {
+  if (mode === "mcq") return "AI MCQ quiz";
+  if (mode === "flashcards") return "AI flashcards";
+  return "AI study guide";
 }
 
 function fileToBase64(file) {
