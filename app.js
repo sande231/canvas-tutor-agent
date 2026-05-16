@@ -1218,7 +1218,7 @@ function hasReadableStudyText(item) {
 function analyzeModule(module) {
   const readableItems = module.items.filter((item) => hasReadableStudyText(item));
   const combinedText = readableItems
-    .map((item) => `${item.title}. ${item.summary || ""}`)
+    .map((item) => `${item.title}. ${cleanStudyText(item.summary || "")}`)
     .join(" ");
   const sentences = splitSentences(combinedText);
   const facts = extractStudyFacts(module, readableItems);
@@ -1352,11 +1352,11 @@ function buildModuleMcqQuiz(module, analysis = analyzeModule(module)) {
     "Skip the posted file and start the assignment from memory.",
   ]
     .map((choice) => cleanChoice(choice))
-    .filter(Boolean);
+    .filter(isGoodMcqChoice);
 
   const questions = [];
 
-  analysis.facts.slice(0, 10).forEach((fact, index) => {
+  analysis.facts.filter((fact) => isGoodMcqChoice(fact.answer)).slice(0, 10).forEach((fact, index) => {
     questions.push(makeMcqQuestion({
       question: fact.quizQuestion,
       answer: fact.answer,
@@ -1397,7 +1397,7 @@ function makeMcqQuestion({ question, answer, explanation, pool, seed = 0 }) {
   pool.forEach((candidate) => {
     const cleaned = cleanChoice(candidate);
     if (choices.length >= 4) return;
-    if (!cleaned || normalizeChoice(cleaned) === normalizedCorrect) return;
+    if (!isGoodMcqChoice(cleaned) || normalizeChoice(cleaned) === normalizedCorrect) return;
     if (choices.some((choice) => normalizeChoice(choice) === normalizeChoice(cleaned))) return;
     choices.push(cleaned);
   });
@@ -1421,7 +1421,18 @@ function makeMcqQuestion({ question, answer, explanation, pool, seed = 0 }) {
 }
 
 function cleanChoice(choice) {
-  return shorten(String(choice || "").replace(/\s+/g, " ").trim(), 155);
+  return shorten(cleanStudyText(choice), 155);
+}
+
+function isGoodMcqChoice(choice) {
+  const text = String(choice || "").trim();
+  if (text.length < 24) return false;
+  if (isLowValueStudySentence(text)) return false;
+  if (/https?:\/\//i.test(text)) return false;
+  if (/[\\^`{}[\]~|]{2,}/.test(text)) return false;
+  const letters = (text.match(/[a-zA-Z]/g) || []).length;
+  const symbols = (text.match(/[^a-zA-Z0-9\s.,;:()'"/-]/g) || []).length;
+  return letters >= 18 && symbols / Math.max(text.length, 1) < 0.08;
 }
 
 function normalizeChoice(choice) {
@@ -1448,9 +1459,8 @@ function extractStudyFacts(module, items) {
   const facts = [];
 
   items.filter((item) => hasReadableStudyText(item)).forEach((item) => {
-    const sentences = splitSentences(item.summary || "")
-      .filter((sentence) => sentence.length > 35)
-      .filter((sentence) => !isLowValueStudySentence(sentence))
+    const sentences = splitSentences(cleanStudyText(item.summary || ""))
+      .filter(isStrongStudySentence)
       .slice(0, 8);
 
     sentences.forEach((sentence) => {
@@ -1482,7 +1492,19 @@ function buildFactQuestion(sentence, term, item) {
   if (/\b(define|means|refers to|is a|are a)\b/.test(lower)) {
     return `What does ${term} mean according to ${item.title}?`;
   }
-  return `What is the main idea of this sentence from ${item.title}: ${shorten(sentence, 95)}?`;
+  return `Which statement best explains ${term} from ${item.title}?`;
+}
+
+function isStrongStudySentence(sentence) {
+  const text = String(sentence || "").trim();
+  if (text.length < 45 || text.length > 260) return false;
+  if (isLowValueStudySentence(text)) return false;
+  if (/https?:\/\//i.test(text)) return false;
+  if (/[\\^`{}[\]~|]{2,}/.test(text)) return false;
+  if (!/[.!?]$/.test(text) && text.split(/\s+/).length > 24) return false;
+  const letters = (text.match(/[a-zA-Z]/g) || []).length;
+  const symbols = (text.match(/[^a-zA-Z0-9\s.,;:()'"/-]/g) || []).length;
+  return letters >= 30 && symbols / Math.max(text.length, 1) < 0.08;
 }
 
 function isLowValueStudySentence(sentence) {
@@ -1490,12 +1512,18 @@ function isLowValueStudySentence(sentence) {
   if (!text) return true;
   return (
     /^(click|submit|available|points|due|http|https|file|application\/pdf|application\/octet-stream)/i.test(text) ||
+    /https?:\/\/|www\.|\.org\/|\.com\//i.test(text) ||
+    /\bdr\.?\s+[a-z]+\s+[a-z]+\b/i.test(text) ||
     /canvas did not expose readable text|add a pdf\/docx parser|not plain text|download returned|could not read the canvas file/i.test(text) ||
-    /^[\w\s.-]+\.(pdf|docx|pptx|zip|ipynb)$/i.test(text)
+    /^[\w\s.-]+\.(pdf|docx|pptx|zip|ipynb)$/i.test(text) ||
+    (text.match(/[\\^`{}[\]~|]/g) || []).length > 4
   );
 }
 
 function bestTermFromSentence(sentence) {
+  const phrase = importantPhraseFromSentence(sentence);
+  if (phrase) return phrase;
+
   const words = sentence
     .replace(/[^a-zA-Z0-9_\s-]/g, " ")
     .split(/\s+/)
@@ -1503,6 +1531,29 @@ function bestTermFromSentence(sentence) {
     .filter((word) => !["about", "because", "should", "would", "could", "their", "there", "where", "which", "these", "those", "module"].includes(word.toLowerCase()));
 
   return words[0] || "";
+}
+
+function importantPhraseFromSentence(sentence) {
+  const text = String(sentence || "");
+  const phrases = [
+    "Artificial Intelligence",
+    "Machine Learning",
+    "Deep Learning",
+    "Data Science",
+    "Big Data",
+    "Exploratory Data Analysis",
+    "Supervised Learning",
+    "Unsupervised Learning",
+    "Linear Regression",
+    "Gradient Descent",
+    "Probability Theory",
+    "Statistics",
+    "Volume",
+    "Velocity",
+    "Variety",
+    "Complexity",
+  ];
+  return phrases.find((phrase) => new RegExp(`\\b${phrase.replace(/\s+/g, "\\s+")}\\b`, "i").test(text)) || "";
 }
 
 function dedupeQuestions(questions) {
@@ -1591,7 +1642,7 @@ function cleanConceptTitle(title) {
 }
 
 function firstUsefulSentence(text) {
-  return splitSentences(text).find((sentence) => sentence.length > 35) || "";
+  return splitSentences(cleanStudyText(text)).find(isStrongStudySentence) || "";
 }
 
 function summarizeModuleFallback(module) {
@@ -1606,12 +1657,22 @@ function fallbackKeyPoints(module) {
 }
 
 function splitSentences(text) {
-  return text
+  return cleanStudyText(text)
     .replace(/\s+/g, " ")
     .split(/(?<=[.!?])\s+/)
     .map((sentence) => sentence.trim())
     .filter(Boolean)
     .slice(0, 60);
+}
+
+function cleanStudyText(text) {
+  return String(text || "")
+    .replace(/https?:\/\/\S+/gi, " ")
+    .replace(/www\.\S+/gi, " ")
+    .replace(/\b[\w.-]+@[\w.-]+\.\w+\b/g, " ")
+    .replace(/[^\x09\x0a\x0d\x20-\x7e]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function scoreSentence(sentence) {
@@ -1624,8 +1685,26 @@ function scoreSentence(sentence) {
 }
 
 function extractKeyTerms(module, text) {
+  const knownTerms = [
+    "Artificial Intelligence",
+    "Machine Learning",
+    "Deep Learning",
+    "Data Science",
+    "Big Data",
+    "Exploratory Data Analysis",
+    "Supervised Learning",
+    "Unsupervised Learning",
+    "Linear Regression",
+    "Gradient Descent",
+    "Probability Theory",
+    "Statistics",
+    "Volume",
+    "Velocity",
+    "Variety",
+    "Complexity",
+  ].filter((term) => new RegExp(`\\b${term.replace(/\s+/g, "\\s+")}\\b`, "i").test(text));
   const candidates = [...new Set(
-    text
+    cleanStudyText(text)
       .replace(/[^a-zA-Z0-9\s-]/g, " ")
       .split(/\s+/)
       .filter((word) => word.length > 5)
@@ -1633,15 +1712,41 @@ function extractKeyTerms(module, text) {
   )];
   const sentences = splitSentences(text);
 
-  return candidates.slice(0, 12).map((term) => {
+  return [...new Set([...knownTerms, ...candidates])].slice(0, 12).map((term) => {
     const definitionSource = sentences.find((sentence) => sentence.toLowerCase().includes(term.toLowerCase()));
+    const knownDefinition = knownTermDefinition(term);
     return {
       term,
-      definition: definitionSource
-        ? shorten(definitionSource, 150)
-        : `A key idea from ${module.name}. Find it in the module material and connect it to an example.`,
+      definition:
+        knownDefinition ||
+        (definitionSource && isStrongStudySentence(definitionSource)
+          ? shorten(definitionSource, 150)
+          : `A key idea from ${module.name}. Find it in the module material and connect it to an example.`),
     };
   });
+}
+
+function knownTermDefinition(term) {
+  const key = String(term || "").toLowerCase();
+  const definitions = {
+    "artificial intelligence": "Artificial intelligence is the broader field of building systems that perform tasks requiring human-like reasoning, perception, or decision-making.",
+    "machine learning": "Machine learning is a branch of AI where models learn patterns from data instead of being programmed with every rule by hand.",
+    "deep learning": "Deep learning uses multi-layer neural networks to learn complex patterns from large amounts of data.",
+    "data science": "Data science combines statistics, computing, and domain knowledge to collect, analyze, and explain data for decisions.",
+    "big data": "Big data refers to data that is large, fast, varied, or complex enough that traditional tools are difficult to use effectively.",
+    "exploratory data analysis": "Exploratory data analysis is the process of summarizing and visualizing data to find patterns, outliers, and relationships before modeling.",
+    "supervised learning": "Supervised learning trains a model using labeled examples where the correct output is already known.",
+    "unsupervised learning": "Unsupervised learning finds patterns or groups in data without labeled answers.",
+    "linear regression": "Linear regression models the relationship between input variables and a numeric output using a best-fit line or equation.",
+    "gradient descent": "Gradient descent is an optimization method that repeatedly adjusts model parameters to reduce error.",
+    "probability theory": "Probability theory studies uncertainty and the likelihood of events.",
+    statistics: "Statistics uses data collection, summaries, inference, and probability to understand variation and support decisions.",
+    volume: "Volume describes the size or amount of data.",
+    velocity: "Velocity describes how quickly data is generated, received, or processed.",
+    variety: "Variety describes the different formats, sources, and structures of data.",
+    complexity: "Complexity describes how difficult data is to manage, combine, clean, or extract value from.",
+  };
+  return definitions[key] || "";
 }
 
 async function planAssignment(course, assignments, modules, postedNotes, assignmentId) {
