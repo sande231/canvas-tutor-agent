@@ -571,6 +571,15 @@ textarea:focus {
   font-size: 0.9rem;
 }
 
+.file-import-row input {
+  width: 100%;
+  padding: 10px;
+  color: #31463d;
+  background: #ffffff;
+  border: 1px dashed #aebdb4;
+  border-radius: 6px;
+}
+
 .explain-box {
   padding: 12px;
   background: #edf4f7;

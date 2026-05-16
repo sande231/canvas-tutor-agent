@@ -36,6 +36,11 @@ const server = http.createServer(async (request, response) => {
       return;
     }
 
+    if (request.method === "POST" && request.url === "/api/local-file-text") {
+      await proxyLocalFileText(request, response);
+      return;
+    }
+
     if (request.method === "POST" && request.url === "/api/daily-digest/config") {
       await saveDailyDigestConfig(request, response);
       return;
@@ -264,6 +269,32 @@ async function proxyCanvasFileText(request, response) {
       text: "",
       readable: false,
       reason: error.message || "Could not read the Canvas file.",
+    });
+  }
+}
+
+async function proxyLocalFileText(request, response) {
+  const body = await readJsonBody(request, 30_000_000);
+  const title = String(body.title || "Downloaded Canvas file").trim();
+  const contentType = String(body.contentType || "").trim();
+  const dataBase64 = String(body.dataBase64 || "");
+
+  if (!dataBase64) {
+    sendJson(response, 400, { error: "Missing file content." });
+    return;
+  }
+
+  try {
+    const buffer = Buffer.from(dataBase64, "base64");
+    const processed = processDownloadedFile(title, contentType, buffer);
+    sendJson(response, 200, processed);
+  } catch (error) {
+    sendJson(response, 200, {
+      title,
+      text: "",
+      readable: false,
+      contentType,
+      reason: error.message || "Could not read this downloaded file.",
     });
   }
 }
@@ -949,12 +980,12 @@ function serveStatic(request, response) {
   });
 }
 
-function readJsonBody(request) {
+function readJsonBody(request, maxBytes = 1_000_000) {
   return new Promise((resolve, reject) => {
     let data = "";
     request.on("data", (chunk) => {
       data += chunk;
-      if (data.length > 1_000_000) {
+      if (data.length > maxBytes) {
         reject(new Error("Request body is too large."));
       }
     });
@@ -1403,23 +1434,23 @@ function extractPdfArrayText(value) {
 
   while ((match = pattern.exec(value))) {
     if (match[1]) parts.push(decodePdfHex(match[1]));
-    else parts.push(decodePdfLiteral(match[0]));
+    else parts.push(decodePdfLiteral(match[0], true));
   }
 
-  return parts.join(" ");
+  return parts.join("").replace(/[ \t]{2,}/g, " ").trim();
 }
 
-function decodePdfLiteral(value) {
-  return String(value || "")
+function decodePdfLiteral(value, preserveSpacing = false) {
+  const decoded = String(value || "")
     .replace(/^\(|\)$/g, "")
     .replace(/\\([nrtbf()\\])/g, (_, char) => {
       const escapes = { n: "\n", r: "\r", t: "\t", b: "", f: "", "(": "(", ")": ")", "\\": "\\" };
       return escapes[char] ?? char;
     })
     .replace(/\\\d{1,3}/g, " ")
-    .replace(/[^\x09\x0a\x0d\x20-\x7e]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+    .replace(/[^\x09\x0a\x0d\x20-\x7e]/g, " ");
+
+  return preserveSpacing ? decoded : decoded.replace(/\s+/g, " ").trim();
 }
 
 function decodePdfHex(value) {

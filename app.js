@@ -883,6 +883,7 @@ async function generateModuleQuiz(course, modules, moduleId) {
   if (!module) return;
 
   showResponse("Module MCQ Quiz", renderModuleQuiz(course, module));
+  bindModuleNoteActions(course, module);
 }
 
 async function generateModuleFlashcards(course, modules, moduleId) {
@@ -1006,6 +1007,7 @@ function renderModuleNotes(course, module, analysis = analyzeModule(module)) {
                     <strong>${escapeHtml(item.title)}</strong>
                     <span>${escapeHtml(moduleItemLabel(item))}</span>
                     ${item.summary ? `<p>${escapeHtml(shorten(item.summary, 150))}</p>` : ""}
+                    ${item.readDebug ? `<p>Canvas path: ${escapeHtml(item.readDebug)}</p>` : ""}
                   </div>
                 `,
               )
@@ -1017,6 +1019,7 @@ function renderModuleNotes(course, module, analysis = analyzeModule(module)) {
       <button class="primary-btn" type="button" id="module-note-again">Add Study Note</button>
       <button type="button" id="module-quiz-from-notes">Make Quiz</button>
     </div>
+    ${renderDownloadedFileImport("notes")}
   `;
 }
 
@@ -1073,6 +1076,7 @@ function renderModuleQuiz(course, module) {
     <div class="explain-box">
       <p>${escapeHtml(analysis.studyPlan)}</p>
     </div>
+    ${renderDownloadedFileImport("quiz")}
   `;
 }
 
@@ -1120,6 +1124,19 @@ function renderModuleFlashcards(course, module) {
       <button class="primary-btn" type="button" id="flashcards-to-quiz">Make MCQ Quiz</button>
       <button type="button" id="flashcards-to-notes">Study Module</button>
     </div>
+    ${renderDownloadedFileImport("flashcards")}
+  `;
+}
+
+function renderDownloadedFileImport(mode) {
+  return `
+    <div class="coach-section">
+      <h3>Add Downloaded Canvas File</h3>
+      <div class="file-import-row">
+        <input type="file" id="downloaded-module-file-${mode}" data-module-file-import="${mode}" accept=".pdf,.zip,.ipynb,.pynb,.txt,.md,.csv,.json,.py,.js,.ts,.java,.c,.cpp,.docx,.pptx,image/*,application/pdf,application/zip">
+      </div>
+      <p>Use this when Canvas lets you download the file in your browser but the API does not expose the file id to the tutor.</p>
+    </div>
   `;
 }
 
@@ -1159,6 +1176,12 @@ function bindModuleNoteActions(course, module) {
   if (quizButton) quizButton.addEventListener("click", () => generateModuleQuiz(course, [module], module.id));
   if (flashcardQuizButton) flashcardQuizButton.addEventListener("click", () => generateModuleQuiz(course, [module], module.id));
   if (flashcardNotesButton) flashcardNotesButton.addEventListener("click", () => generateModuleNotes(course, [module], module.id));
+  responseBody.querySelectorAll("[data-module-file-import]").forEach((input) => {
+    input.addEventListener("change", () => {
+      const file = input.files?.[0];
+      if (file) importDownloadedModuleFile(course, module, file, input.dataset.moduleFileImport || "notes");
+    });
+  });
 }
 
 function summarizeModule(module) {
@@ -2297,6 +2320,80 @@ async function canvasFileTextFetch(baseUrl, token, fileId, apiPath = "") {
   }
 
   return payload;
+}
+
+async function importDownloadedModuleFile(course, module, file, mode) {
+  showResponse(
+    "Reading Downloaded File",
+    `<p>Reading <strong>${escapeHtml(file.name)}</strong> and adding it to <strong>${escapeHtml(module.name)}</strong>.</p>`,
+  );
+
+  try {
+    const payload = await localFileTextFetch(file);
+    const importedItem = {
+      id: `local-file-${Date.now()}`,
+      title: payload.title || file.name,
+      type: "File",
+      moduleName: module.name,
+      summary: payload.readable
+        ? payload.text
+        : `${payload.contentType || file.type || "File"} · ${payload.reason || "The downloaded file could not be converted to study text."}`,
+      readable: payload.readable,
+      sourceKind: payload.sourceKind || "file",
+      readDebug: "downloaded from your Canvas browser session",
+    };
+
+    module.items = [importedItem, ...module.items.filter((item) => item.title !== importedItem.title)];
+    module.hydrated = true;
+
+    if (mode === "quiz") {
+      showResponse("Module MCQ Quiz", renderModuleQuiz(course, module));
+    } else if (mode === "flashcards") {
+      showResponse("Module Flashcards", renderModuleFlashcards(course, module));
+    } else {
+      showResponse("Module Study Notes", renderModuleNotes(course, module));
+    }
+    bindModuleNoteActions(course, module);
+  } catch (error) {
+    showResponse(
+      "Downloaded File Failed",
+      `<p>${escapeHtml(error.message || "The tutor could not read this downloaded file.")}</p>`,
+    );
+  }
+}
+
+async function localFileTextFetch(file) {
+  const dataBase64 = await fileToBase64(file);
+  const response = await fetch("/api/local-file-text", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      title: file.name,
+      contentType: file.type,
+      dataBase64,
+    }),
+  });
+  const payload = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    throw new Error(payload.error || "The local file reader could not complete the request.");
+  }
+
+  return payload;
+}
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = String(reader.result || "");
+      resolve(result.includes(",") ? result.split(",").pop() : result);
+    };
+    reader.onerror = () => reject(new Error("Could not read the selected file."));
+    reader.readAsDataURL(file);
+  });
 }
 
 function canvasErrorMessage(error) {
