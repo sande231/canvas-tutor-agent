@@ -1228,7 +1228,8 @@ function moduleItemLabel(item) {
 function hasReadableStudyText(item) {
   if (!item.summary || item.summary.trim().length < 35) return false;
   if (item.type === "File" && item.readable === false) return false;
-  return !isLowValueStudySentence(item.summary);
+  if (item.readable === true) return extractUsableStudyText(item.summary).length >= 35;
+  return extractUsableStudyText(item.summary).length >= 35;
 }
 
 function analyzeModule(module) {
@@ -2558,7 +2559,7 @@ async function runAiTutor(course, module, mode) {
 function buildAiTutorPayload(course, module, mode) {
   const readableItems = module.items.filter((item) => hasReadableStudyText(item));
   const studyText = readableItems
-    .map((item) => `SOURCE: ${item.title}\nTYPE: ${moduleItemLabel(item)}\n${cleanStudyText(item.summary || "")}`)
+    .map((item) => `SOURCE: ${item.title}\nTYPE: ${moduleItemLabel(item)}\n${extractUsableStudyText(item.summary || "")}`)
     .join("\n\n---\n\n")
     .slice(0, 45000);
   const canvasContext = module.items
@@ -2573,6 +2574,15 @@ function buildAiTutorPayload(course, module, mode) {
     canvasContext,
     studyText,
   };
+}
+
+function extractUsableStudyText(text) {
+  const sentences = splitSentences(text).filter(isStrongStudySentence);
+  if (sentences.length) return sentences.slice(0, 80).join(" ");
+
+  const cleaned = cleanStudyText(text);
+  if (cleaned.length < 35 || isLowValueStudySentence(cleaned)) return "";
+  return cleaned.slice(0, 12000);
 }
 
 function renderAiTutorResult(course, module, result, mode) {
