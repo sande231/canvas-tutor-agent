@@ -1,6 +1,19 @@
-# Canvas Tutor Agent
+# Canvas Tutor
 
 A student study canvas prototype that can connect to Canvas LMS through a local proxy.
+
+## Safe Local Preview
+
+Run `npm run preview` and open http://127.0.0.1:4177 (or use
+`npm run preview -- 4188` for a different port). This binds to localhost and sets
+`EMAIL_DISABLED=1`, which blocks the scheduler, Schedule/Test Mail endpoints,
+email delivery, and draft creation, even when `.env` has provider credentials.
+Canvas and tutor features remain available. Mail Status reports `disabled`.
+The saved digest config/state are not changed. Stop with Ctrl+C.
+
+Normal `npm start` / `node server.js` launches enable the scheduler, which checks
+saved configuration every minute. Preview mode only affects this process; it
+does not disable separately installed launchd jobs or cloud schedules.
 
 ## Run In Codex
 
@@ -29,7 +42,7 @@ node server.js 4180
 When you come back another day:
 
 ```bash
-cd /Users/sandeep/Documents/Codex/2026-05-12/can-you-give-me-some-ideas
+cd /Users/sandeep/Documents/Codex/2026-05-12/canvas-tutor
 node server.js
 ```
 
@@ -40,6 +53,22 @@ node server.js 4188
 ```
 
 Keep your private keys in `.env`. Do not paste Canvas tokens, Resend keys, or SMTP passwords into GitHub.
+
+## Board Notes and Grades
+
+Study-board cards are saved locally in this browser and restored after refresh.
+Use each card's Edit/Delete buttons; dragging, Auto Layout, and Reset Board also
+save the resulting board. Only note fields are stored, not connection credentials.
+Malformed saved entries are skipped. If browser storage is blocked or full, the
+board remains usable but changes cannot persist. Storage is specific to the
+browser and origin (including the preview port).
+
+The Student Success Center shows a points-weighted **Graded-only average** of
+loaded assignments, excluding missing/blank scores and including real zeroes.
+This is not the full Canvas course grade: the current scan loads upcoming work.
+When no eligible grades exist, it displays **No graded work**.
+
+Run focused checks with `node --test tests/board-grades.test.js`.
 
 ## Canvas Connection
 
@@ -238,3 +267,162 @@ GitHub Actions cron uses UTC, so adjust the cron time when daylight saving time 
 - `package.json` - Node start/check scripts for local use and Render
 - `render.yaml` - Render web service blueprint
 - `.env.example` - private email configuration template
+
+## Application Navigation
+
+Connect opens the dashboard in the same tab. The dashboard lists active Canvas
+courses independently of upcoming assignments, with a separate seven-day deadline
+list. The sidebar provides Settings, Study Board, Focus Sprint, Tutor Tools, and
+course pickers for Planner, Goals, and Resources. Course workspaces have Overview,
+Assignments, Modules, AI Tutor, Flashcards, Quizzes, Notes, Study Plan, Goals, and
+Resources navigation. Tutor output expands in a collapsible panel. Shared rooms
+and study buddies are explicitly Coming soon.
+
+View navigation uses URL fragments containing only view names and course IDs;
+browser Back works, and tokens remain in memory. After a full refresh, reconnect
+to use Canvas; saved notes remain accessible without reconnecting. Settings shows
+mail disabled in the safe preview. Arrange spaces board cards using measured card
+heights, and focused cards can be moved with arrow keys.
+
+The DOM integration check uses mocked Canvas responses and no real credentials.
+To run it without adding application dependencies:
+
+```bash
+npm install --prefix /tmp/canvas-ui-check jsdom --no-audit --no-fund
+NODE_PATH=/tmp/canvas-ui-check/node_modules node --test tests/navigation.test.js
+node --test tests/board-grades.test.js
+npm run check
+```
+
+These checks cover authentication errors and success, courses without deadlines,
+course tabs and scoping, Back/dashboard navigation, note restoration, arrangement,
+and disabled mail. They do not replace a visual browser check or a live Canvas test.
+
+## Automatic Module Reading
+
+Use Node 22.13+ and run `npm install` (PDF.js is now a runtime dependency).
+Selecting a module loads every page of its item list, then retrieves Canvas page
+bodies, discussion messages, assignment/quiz descriptions and files. Section
+headings are skipped. AI Flashcards and AI MCQ Quiz refresh this selected module
+before generation; switching modules or navigating discards stale results.
+
+Public ExternalUrl sources are retrieved without Canvas credentials. Each redirect
+is validated, private/reserved IPv4 destinations and IPv6 destinations are blocked,
+and DNS answers are pinned to the connection. Downloads are limited to 20 MB and
+five redirects. Login pages, denied requests, unsupported formats and empty bodies
+show recovery instructions; uploading an accessible copy remains a fallback.
+Scanned PDFs still require OCR or a text-based copy. External pages requiring
+JavaScript/browser login cannot be read automatically.
+
+PDF.js extracts PDF text with page labels. Office ZIP reading supports data
+descriptors, DOCX bodies and numbered PPTX slides. Notebook and plain-text readers
+remain supported. AI input is excerpted to at most 12,000 characters per source
+and 45,000 total. The source report distinguishes readable, blocked and heading
+items. Generated cards/questions show source titles, available page/section labels,
+and supporting excerpts. The server rejects citations not found in the provided
+source and quizzes whose answer is not among their choices. These checks do not
+prove every model interpretation correct.
+
+Run all offline checks (using the temporary jsdom setup described above):
+
+```bash
+NODE_PATH=/tmp/canvas-ui-check/node_modules node --test tests/*.test.js
+```
+
+Live verification: connect privately, open COSC201 → Week 4, then choose AI
+Flashcards or AI MCQ Quiz. Check the discussion and external-link reading statuses
+and Sources used. No real Canvas token or AI provider call is used by the tests.
+
+### Flashcard / quiz failure repairs
+
+The Responses request now includes an explicit JSON instruction in its input
+message and a complete source-citation structure. Malformed, incomplete, refused,
+empty or ungrounded output is shown as an error. Flashcards reveal their answers;
+quizzes accept a choice before displaying correctness, explanation and citation.
+Generated practice remains available when returning to the same course/tool tab.
+
+File reading distinguishes metadata denial from download denial. It preserves
+signed query strings, resolves `public_url` JSON to a real download URL, and retries
+with freshly fetched metadata before reporting download failure. A sanitized
+per-item trace reports stages and status codes, never tokens or signed URLs.
+
+Legacy binary `.ppt` now uses **LibreOffice first**. LibreOffice 26.8.0.3 is
+installed at `/Applications/LibreOffice.app`; the server detects its `soffice`
+executable automatically. It converts binary presentations to PPTX, then uses
+our existing slide and speaker-note extraction. On another machine, install
+LibreOffice or set `LIBREOFFICE_PATH` to its `soffice` executable.
+
+Conversion uses an isolated temporary profile, a 45-second limit, bounded output
+and automatic cleanup. If conversion fails or produces no text, the installed
+**catppt** reader remains available as a fallback. Image-only, encrypted or
+damaged files can still require OCR or an unlocked text-based export.
+
+`npm run setup:ppt` installs the small fallback reader (catdoc 0.97.2) into ignored
+`.tools/catdoc`, using a pinned, checksum-verified release. It requires a C compiler
+and make. Alternatively set `CATPPT_PATH` to an existing executable. catppt output
+uses extracted **section** references because its stream does not reliably
+preserve visible slide numbers and may include retained revision text; identical
+blocks are deduplicated. Restart `npm run preview` after installing either reader.
+
+To make room for LibreOffice, eight unused August Codex updater-cache copies were
+removed (4.54 GiB recovered). Personal files and project data were preserved.
+The official installer checksum was verified before direct installation from its
+DMG after Homebrew's unpack step failed.
+
+Public Google Drive/Docs/Slides viewer links are resolved to download/export URLs,
+retaining resource keys. Simple linked documents in public HTML viewers can be
+followed through the same destination checks. Login, error and short/meaningless
+viewer text is rejected and never sent to AI as study content. This quality filter
+is deliberately conservative; a very short legitimate note can also be excluded.
+
+`tests/generation-regression.test.js` exercises actual request construction,
+upstream errors, stale download recovery, permission denial, unusable viewers,
+conversion dispatch, and Create-button → validated-server-response → interactive
+rendering. Test study text and credentials are synthetic. A live OpenAI smoke test
+with synthetic text returned four validated flashcards. The saved Canvas token
+returned 401/expired, so the two actual Week 2 downloads were not live-verified.
+
+### Student-focused study cards
+
+Study Module and manual-upload study actions now use the same AI generation path
+as Create flashcards, replacing the old template cards built from filenames and
+slide-title fragments. Study results show important points and concept questions
+with revealable answers. Source evidence and reading diagnostics are collapsed.
+Important points and cards are checked against the selected module sources;
+filename questions, repeated prompts and slide-index answers are rejected.
+PowerPoint extraction includes linked speaker notes and removes slide-number,
+date and footer placeholders. Heading-only decks are flagged as insufficient
+instead of generating invented explanations. Existing board notes remain saved;
+reopen a module to regenerate its study content with the new flow.
+
+### Generation wait and recovery
+
+Each request now asks for only the selected tool: up to five flashcards (plus
+important points) or five quiz questions. GPT-5 requests use low reasoning effort;
+the configured model is unchanged. The UI shows elapsed generation time and a
+Cancel button. A 75-second server deadline covers both the provider request and
+response body; an independent 85-second browser deadline prevents indefinite
+loading if the proxy connection stalls. Failures show Retry, cancellation ignores
+late results, and navigating away aborts the active browser generation request.
+No template or invented questions are substituted on failure.
+
+### Passage citations and generation verification
+
+AI requests label actual source passages with request-local IDs. The model selects
+a supporting passage; the server attaches its original text, filename and section.
+This avoids discarding otherwise valid questions due to retyped-quote formatting
+or numeric source IDs. Unknown or mismatched references remain rejected. Quiz
+answer letters A–D are resolved to the corresponding choice; arbitrary invalid
+answers are rejected. No generic fallback cards are substituted.
+
+27 focused checks pass, including a real binary PPT extraction, passage references,
+incorrect references, interactive flashcards/quiz answers, module switches, saved
+notes, failed downloads and empty sources. Live calls to the configured model
+using synthetic 9,570-character EDA material returned five cards and five quiz
+questions in about seven seconds each. This does not verify private Week 2/5
+Canvas files or external links; those must be retried in the connected preview.
+
+A DOM-based live check also exercised both Create buttons through the running
+preview and real AI service with synthetic Canvas page content: five visible
+flashcards, five quiz questions, answer reveal, quiz feedback, and return-to-tab
+retention all passed. Run `npm test` for the offline regression suite.

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PROJECT_DIR="/Users/sandeep/Documents/Codex/2026-05-12/can-you-give-me-some-ideas"
+PROJECT_DIR="/Users/sandeep/Documents/Codex/2026-05-12/canvas-tutor"
 LABEL="com.sandeep.canvas-tutor-agent"
 PLIST_SOURCE="$PROJECT_DIR/launchd/$LABEL.plist"
 PLIST_TARGET="$HOME/Library/LaunchAgents/$LABEL.plist"

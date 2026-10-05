@@ -13,7 +13,7 @@
   </array>
 
   <key>WorkingDirectory</key>
-  <string>/Users/sandeep/Documents/Codex/2026-05-12/can-you-give-me-some-ideas</string>
+  <string>/Users/sandeep/Documents/Codex/2026-05-12/canvas-tutor</string>
 
   <key>RunAtLoad</key>
   <true/>
@@ -22,10 +22,10 @@
   <true/>
 
   <key>StandardOutPath</key>
-  <string>/Users/sandeep/Documents/Codex/2026-05-12/can-you-give-me-some-ideas/logs/background-mail.log</string>
+  <string>/Users/sandeep/Documents/Codex/2026-05-12/canvas-tutor/logs/background-mail.log</string>
 
   <key>StandardErrorPath</key>
-  <string>/Users/sandeep/Documents/Codex/2026-05-12/can-you-give-me-some-ideas/logs/background-mail-error.log</string>
+  <string>/Users/sandeep/Documents/Codex/2026-05-12/canvas-tutor/logs/background-mail-error.log</string>
 
   <key>EnvironmentVariables</key>
   <dict>

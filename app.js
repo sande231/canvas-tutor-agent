@@ -26,9 +26,9 @@ const sprintResetButton = document.querySelector("#sprint-reset");
 
 const palette = ["yellow", "coral", "blue", "violet", "green"];
 const requestTimeoutMs = 15000;
-const savedCanvasUrl = localStorage.getItem("canvasTutor.canvasUrl");
-const savedDigestEmail = localStorage.getItem("canvasTutor.digestEmail");
-const savedDigestTime = localStorage.getItem("canvasTutor.digestTime");
+const savedCanvasUrl = readLocalValue("canvasTutor.canvasUrl");
+const savedDigestEmail = readLocalValue("canvasTutor.digestEmail");
+const savedDigestTime = readLocalValue("canvasTutor.digestTime");
 
 let canvasConnection = {
   baseUrl: savedCanvasUrl || "",
@@ -49,7 +49,64 @@ if (savedDigestTime) {
   digestTimeInput.value = savedDigestTime;
 }
 
-let notes = [];
+const boardStorageKey = "canvasTutor.boardNotes.v1";
+
+function normalizeBoardNotes(value) {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set();
+  return value.flatMap((note) => {
+    if (!note || typeof note !== "object" || typeof note.id !== "string" ||
+        !note.id || seen.has(note.id) ||
+        ![note.title, note.content, note.topic].every((field) => typeof field === "string")) return [];
+    seen.add(note.id);
+    // Explicit allowlist: never serialize connection objects or credentials.
+    return [{ id: note.id, title: note.title, content: note.content, topic: note.topic,
+      color: palette.includes(note.color) ? note.color : palette[0],
+      x: Number.isFinite(note.x) ? note.x : 80,
+      y: Number.isFinite(note.y) ? note.y : 70 }];
+  });
+}
+
+function readLocalValue(key) {
+  try { return localStorage.getItem(key); } catch { return null; }
+}
+
+function restoreBoardNotes() {
+  try {
+    return normalizeBoardNotes(JSON.parse(localStorage.getItem(boardStorageKey) || "[]"));
+  } catch {
+    return [];
+  }
+}
+
+function saveBoardNotes() {
+  try {
+    localStorage.setItem(boardStorageKey, JSON.stringify(normalizeBoardNotes(notes)));
+  } catch {
+    // Keep the board usable when storage is unavailable or full.
+    console.warn("Study-board notes could not be saved in this browser.");
+  }
+}
+
+function editBoardNote(id) {
+  const note = notes.find((item) => item.id === id);
+  if (!note) return;
+  const title = window.prompt("Note title", note.title);
+  if (title === null) return;
+  const content = window.prompt("Note text", note.content);
+  if (content === null) return;
+  note.title = title;
+  note.content = content;
+  render();
+}
+
+function deleteBoardNote(id) {
+  notes = notes.filter((note) => note.id !== id);
+  if (selectedId === id) selectedId = null;
+  render();
+}
+
+let notes = restoreBoardNotes();
 
 let selectedId = null;
 let zCounter = 10;
@@ -62,6 +119,7 @@ let sprint = {
 let activeCourseContext = null;
 
 function render() {
+  saveBoardNotes();
   canvas.querySelectorAll(".note").forEach((node) => node.remove());
 
   notes.forEach((note) => {
@@ -72,11 +130,33 @@ function render() {
     element.style.left = `${note.x}px`;
     element.style.top = `${note.y}px`;
     element.innerHTML = `
-      <small>${note.topic}</small>
+      <small>${escapeHtml(note.topic)}</small>
       <h3>${escapeHtml(note.title)}</h3>
       <p>${escapeHtml(note.content)}</p>
+      <div class="connect-actions">
+        <button type="button" data-note-edit>Edit</button>
+        <button type="button" data-note-delete>Delete</button>
+      </div>
     `;
+    element.querySelector("[data-note-edit]").addEventListener("click", (event) => {
+      event.stopPropagation();
+      editBoardNote(note.id);
+    });
+    element.querySelector("[data-note-delete]").addEventListener("click", (event) => {
+      event.stopPropagation();
+      deleteBoardNote(note.id);
+    });
 
+    element.tabIndex = 0;
+    element.setAttribute("aria-label", `${note.title}. Use arrow keys to move this card.`);
+    element.addEventListener("keydown", event => {
+      if (event.target !== element || !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
+      event.preventDefault();
+      note.x = Math.max(0, note.x + (event.key === "ArrowRight" ? 20 : event.key === "ArrowLeft" ? -20 : 0));
+      note.y = Math.max(0, note.y + (event.key === "ArrowDown" ? 20 : event.key === "ArrowUp" ? -20 : 0));
+      element.style.left = `${note.x}px`; element.style.top = `${note.y}px`;
+      saveBoardNotes(); updateLinks();
+    });
     element.addEventListener("pointerdown", startDrag);
     element.addEventListener("click", () => selectNote(note.id));
     canvas.appendChild(element);
@@ -130,10 +210,12 @@ function updateLinks() {
 }
 
 function startDrag(event) {
+  if (event.target.closest("button")) return;
   const element = event.currentTarget;
   const id = element.dataset.id;
   const note = notes.find((item) => item.id === id);
-  selectNote(id);
+  selectedId = id;
+  updateSelectedSummary();
   element.style.zIndex = `${++zCounter}`;
   element.setPointerCapture(event.pointerId);
 
@@ -154,6 +236,7 @@ function startDrag(event) {
   }
 
   function stop() {
+    saveBoardNotes();
     element.removeEventListener("pointermove", move);
     element.removeEventListener("pointerup", stop);
     element.removeEventListener("pointercancel", stop);
@@ -164,7 +247,32 @@ function startDrag(event) {
   element.addEventListener("pointercancel", stop);
 }
 
+let canvasAuthFailure = null;
+
+function stopCanvasOnUnauthorized(reason = "unauthorized") {
+  const detail = reason === "expired" ? "Canvas reports that your token has expired."
+    : reason === "invalid" ? "Canvas reports that your token is invalid."
+    : "Canvas rejected authentication (401 Unauthorized).";
+  canvasAuthFailure = new Error(`${detail} Requests are paused. Replace the token privately in the Access token field, then click Connect. Do not paste it into chat.`);
+  canvasAuthFailure.status = 401;
+  importCanvasButton.disabled = true;
+  setCanvasStatus("Authentication failed", "error");
+  showConnectError(canvasAuthFailure.message);
+  return canvasAuthFailure;
+}
+
+function showConnectError(message) {
+  const element = document.querySelector("#canvas-auth-error");
+  element.textContent = message;
+  element.hidden = !message;
+}
+
 async function connectCanvas() {
+  if (connectCanvasButton.disabled) return;
+  // Only an explicit Connect action clears the authentication stop condition.
+  canvasAuthFailure = null;
+  showConnectError("");
+  importCanvasButton.disabled = true;
   const baseUrl = normalizeCanvasUrl(canvasUrlInput.value);
   const token = canvasTokenInput.value.trim();
 
@@ -191,7 +299,8 @@ async function connectCanvas() {
   } catch (error) {
     canvasConnection = { baseUrl: "", token: "", profile: null, courses: [] };
     importCanvasButton.disabled = true;
-    setCanvasStatus("Failed", "error");
+    setCanvasStatus(error.status === 401 ? "Authentication failed" : "Failed", "error");
+    showConnectError(error.message);
     showResponse("Canvas Connection Failed", canvasErrorMessage(error));
   } finally {
     connectCanvasButton.disabled = false;
@@ -205,7 +314,15 @@ async function fetchCanvasCourses(baseUrl, token) {
   });
   params.append("include[]", "term");
   params.append("include[]", "total_scores");
-  const courses = await canvasApiFetch(baseUrl, token, `/api/v1/courses?${params.toString()}`);
+  const courses = [];
+  for (let page = 1; ; page++) {
+    params.set("page", String(page));
+    const batch = await canvasApiFetch(baseUrl, token, `/api/v1/courses?${params.toString()}`);
+    if (!Array.isArray(batch) || !batch.length) break;
+    const fresh = batch.filter(item => !courses.some(course => course.id === item.id));
+    courses.push(...fresh);
+    if (!fresh.length || batch.length < Number(params.get("per_page"))) break;
+  }
 
   return Array.isArray(courses)
     ? courses
@@ -215,6 +332,7 @@ async function fetchCanvasCourses(baseUrl, token) {
           name: course.name,
           courseCode: course.course_code || "",
           term: course.term?.name || "",
+          score: course.enrollments?.[0]?.computed_current_score ?? course.enrollments?.[0]?.computed_final_score ?? null,
         }))
     : [];
 }
@@ -292,6 +410,7 @@ async function fetchCourseAssignments(courseId) {
     order_by: "due_at",
     per_page: "10",
   });
+  params.append("include[]", "submission");
   const assignments = await canvasApiFetch(
     canvasConnection.baseUrl,
     canvasConnection.token,
@@ -304,48 +423,32 @@ async function fetchCourseAssignments(courseId) {
         name: assignment.name || "Untitled assignment",
         dueAt: assignment.due_at || "",
         points: assignment.points_possible,
+        score: assignment.submission?.score ?? null,
+        submittedAt: assignment.submission?.submitted_at || "",
+        workflowState: assignment.submission?.workflow_state || "",
         description: stripHtml(assignment.description || ""),
         htmlUrl: assignment.html_url || "",
       }))
     : [];
 }
 
-async function fetchCourseModules(courseId) {
-  const params = new URLSearchParams({
-    per_page: "100",
-  });
-
-  const modules = await canvasApiFetch(
-    canvasConnection.baseUrl,
-    canvasConnection.token,
-    `/api/v1/courses/${courseId}/modules?${params.toString()}`,
-  );
-
-  if (!Array.isArray(modules)) return [];
-
-  const courseModules = [];
-
-  for (const module of modules) {
-    const itemParams = new URLSearchParams({ per_page: "100" });
-    itemParams.append("include[]", "content_details");
-    const moduleItems = await canvasApiFetch(
-      canvasConnection.baseUrl,
-      canvasConnection.token,
-      `/api/v1/courses/${courseId}/modules/${module.id}/items?${itemParams.toString()}`,
-    );
-
-    courseModules.push({
-      id: module.id,
-      name: module.name || "Untitled module",
-      position: module.position || 0,
-      hydrated: false,
-      items: (Array.isArray(moduleItems) ? moduleItems : []).map((item) =>
-        normalizeModuleItem(module.name || "Untitled module", item),
-      ),
-    });
+async function fetchCanvasList(apiPath) {
+  const items = [];
+  for (let page = 1; ; page++) {
+    const separator = apiPath.includes("?") ? "&" : "?";
+    const batch = await canvasApiFetch(canvasConnection.baseUrl, canvasConnection.token, `${apiPath}${separator}per_page=100&page=${page}`);
+    if (!Array.isArray(batch) || !batch.length) break;
+    const fresh = batch.filter(item => !items.some(existing => existing.id === item.id));
+    items.push(...fresh);
+    if (!fresh.length) break;
   }
+  return items;
+}
 
-  return courseModules;
+async function fetchCourseModules(courseId) {
+  const modules = await fetchCanvasList(`/api/v1/courses/${courseId}/modules`);
+  return modules.map(module => ({ id: module.id, courseId, name: module.name || "Untitled module",
+    position: module.position || 0, itemCount: module.items_count || 0, hydrated: false, items: [] }));
 }
 
 async function fetchCoursePostedNotes(courseId) {
@@ -447,120 +550,44 @@ async function fetchCourseDiscussions(courseId) {
 
 async function hydrateModuleItem(courseId, moduleName, item) {
   const baseItem = normalizeModuleItem(moduleName, item);
-  const apiPath = canvasApiPathFromUrl(baseItem.apiUrl);
-
+  const prefix = `/api/v1/courses/${encodeURIComponent(courseId)}`;
   try {
-    if (baseItem.type === "Page") {
-      const page = await fetchModulePageBody(courseId, baseItem, apiPath);
-      return {
-        ...baseItem,
-        title: page.title || baseItem.title,
-        summary: page.summary,
-        readable: Boolean(page.summary),
-        sourceKind: "page",
-        readDebug: page.debug,
-      };
-    }
-
-    if (baseItem.type === "Assignment" && !baseItem.contentId && apiPath) {
-      const assignment = await canvasApiFetch(canvasConnection.baseUrl, canvasConnection.token, apiPath);
-      return {
-        ...baseItem,
-        title: assignment.name || baseItem.title,
-        summary: stripHtml(assignment.description || ""),
-      };
-    }
-
-    if (baseItem.type === "Assignment" && baseItem.contentId) {
-      const assignment = await fetchAssignmentDetail(courseId, baseItem.contentId);
-      return {
-        ...baseItem,
-        title: assignment.name || baseItem.title,
-        summary: assignment.description || "",
-      };
-    }
-
-    if (baseItem.type === "Discussion" && !baseItem.contentId && apiPath) {
-      const discussion = await canvasApiFetch(canvasConnection.baseUrl, canvasConnection.token, apiPath);
-      return {
-        ...baseItem,
-        title: discussion.title || baseItem.title,
-        summary: stripHtml(discussion.message || ""),
-      };
-    }
-
-    if (baseItem.type === "Discussion" && baseItem.contentId) {
-      const discussion = await canvasApiFetch(
-        canvasConnection.baseUrl,
-        canvasConnection.token,
-        `/api/v1/courses/${courseId}/discussion_topics/${baseItem.contentId}`,
-      );
-      return {
-        ...baseItem,
-        title: discussion.title || baseItem.title,
-        summary: stripHtml(discussion.message || ""),
-      };
-    }
-
-    if (baseItem.type === "Quiz" && !baseItem.contentId && apiPath) {
-      const quiz = await canvasApiFetch(canvasConnection.baseUrl, canvasConnection.token, apiPath);
-      return {
-        ...baseItem,
-        title: quiz.title || baseItem.title,
-        summary: stripHtml(quiz.description || ""),
-      };
-    }
-
-    if (baseItem.type === "Quiz" && baseItem.contentId) {
-      const quiz = await canvasApiFetch(
-        canvasConnection.baseUrl,
-        canvasConnection.token,
-        `/api/v1/courses/${courseId}/quizzes/${baseItem.contentId}`,
-      );
-      return {
-        ...baseItem,
-        title: quiz.title || baseItem.title,
-        summary: stripHtml(quiz.description || ""),
-      };
-    }
-
-    if (baseItem.type === "File" && (baseItem.contentId || apiPath)) {
-      const fileText = await canvasFileTextFetch(
-        canvasConnection.baseUrl,
-        canvasConnection.token,
-        baseItem.contentId,
-        apiPath,
-      );
-      return {
-        ...baseItem,
-        title: fileText.title || baseItem.title,
-        summary: fileText.readable
-          ? fileText.text
-          : `${fileText.contentType || "File"} · ${fileText.reason || "Canvas did not expose readable text for this file."}`,
-        readable: fileText.readable,
-        sourceKind: fileText.sourceKind || "file",
-        readDebug: fileText.debug || baseItem.readDebug,
-      };
-    }
-
+    if (baseItem.type === "SubHeader") return { ...baseItem, readable: false, status: "heading", reason: "Section heading; no document to read." };
+    let result;
     if (baseItem.type === "File") {
-      return {
-        ...baseItem,
-        summary: "Canvas module item did not include a file id or file API URL for the tutor app to download.",
-        readable: false,
-        sourceKind: "file",
-      };
+      if (!baseItem.contentId) throw Error("Canvas did not supply a file ID. Open the file in Canvas or upload an accessible copy.");
+      result = await canvasFileTextFetch(canvasConnection.baseUrl, canvasConnection.token, baseItem.contentId);
+    } else if (baseItem.type === "ExternalUrl") {
+      const response = await fetch('/api/external-text', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({url: baseItem.externalUrl || baseItem.htmlUrl}) });
+      result = await response.json();
+      if (!response.ok) throw Error('External source reader unavailable. Try again or upload an accessible copy.');
+    } else {
+      let apiPath, field;
+      if (baseItem.type === "Page") {
+        const slug = baseItem.pageUrl || pageSlugFromApiPath(baseItem.apiUrl) || pageSlugFromCanvasUrl(baseItem.htmlUrl);
+        if (!slug) throw Error("Canvas did not supply a page URL. Open the module in Canvas to check publication and access.");
+        apiPath = `${prefix}/pages/${encodeURIComponent(slug)}`; field = 'body';
+      } else {
+        const mapping = { Discussion: ['discussion_topics','message'], Assignment: ['assignments','description'], Quiz: ['quizzes','description'] }[baseItem.type];
+        if (!mapping) throw Error(`${baseItem.type} content cannot be read automatically. Open it in Canvas; external tools may require login. Upload a permitted document as a fallback.`);
+        const id = baseItem.contentId || baseItem.apiUrl.match(new RegExp(`/${mapping[0]}/(\\d+)`))?.[1];
+        if (!id) throw Error(`Canvas did not supply the ${baseItem.type} content ID. Check the module item in Canvas.`);
+        apiPath = `${prefix}/${mapping[0]}/${encodeURIComponent(id)}`; field = mapping[1];
+      }
+      const content = await canvasApiFetch(canvasConnection.baseUrl, canvasConnection.token, apiPath);
+      if (content.locked_for_user) throw Error("Canvas has locked this content. Check release dates or ask your instructor for access.");
+      const text = stripHtml(content[field] || '');
+      result = { title: content.title || content.name || baseItem.title, text, readable: Boolean(text.trim()), sourceKind: baseItem.type.toLowerCase(), reason: 'Canvas returned an empty body. Check the published content or upload course material.' };
     }
+    const qualityProblem = result.readable ? studyTextProblem(result.text) : "";
+    const readable = Boolean(result.readable && !qualityProblem);
+    return { ...baseItem, title: baseItem.type === "ExternalUrl" ? baseItem.title : result.title || baseItem.title, summary: readable ? result.text : '',
+      readable, status: readable ? 'read' : 'blocked', sourceKind: result.sourceKind,
+      trace: result.trace || [],
+      reason: readable ? '' : qualityProblem || result.reason || 'No readable text found. Check access or upload an accessible copy.' };
   } catch (error) {
-    return {
-      ...baseItem,
-      summary: `${baseItem.type} reader failed: ${error.message || "Canvas did not return readable content."}`,
-      readable: false,
-      readDebug: baseItem.readDebug || apiPath,
-    };
+    return { ...baseItem, summary: '', readable: false, status: 'blocked', reason: error.message || 'Reading failed. Check access in Canvas.' };
   }
-
-  return baseItem;
 }
 
 function normalizeModuleItem(moduleName, item) {
@@ -573,15 +600,16 @@ function normalizeModuleItem(moduleName, item) {
     item.html_url,
     item.external_url,
   ];
-  const contentId = item.content_id || contentDetails.id || firstCanvasFileId(candidateUrls) || "";
-  const apiUrl = item.url || contentDetails.url || "";
+  const contentId = item.contentId || item.content_id || contentDetails.id || firstCanvasFileId(candidateUrls) || "";
+  const apiUrl = item.apiUrl || item.url || contentDetails.url || "";
   return {
     id: item.id,
     title: item.title || item.type || "Module item",
     type: item.type || "Item",
     contentId,
-    pageUrl: item.page_url || contentDetails.page_url || "",
-    htmlUrl: item.html_url || item.external_url || contentDetails.html_url || contentDetails.url || "",
+    pageUrl: item.pageUrl || item.page_url || contentDetails.page_url || "",
+    externalUrl: item.externalUrl || item.external_url || "",
+    htmlUrl: item.htmlUrl || item.html_url || item.external_url || contentDetails.html_url || contentDetails.url || "",
     apiUrl,
     readDebug: moduleItemDebugPath({ ...item, content_id: contentId, url: apiUrl, candidateUrls }),
     moduleName,
@@ -799,6 +827,17 @@ function renderStudyAreaDetails(course, assignments, modules = [], postedNotes =
       <span>${modules.length} module${modules.length === 1 ? "" : "s"} · ${postedNotes.length} posted note${postedNotes.length === 1 ? "" : "s"} · ${assignments.length} upcoming assignment${assignments.length === 1 ? "" : "s"}</span>
     </div>
     <div class="coach-section">
+      <h3>Student Success Center</h3>
+      <div class="success-action-grid">
+        <button type="button" data-success-view="dashboard">Dashboard</button>
+        <button type="button" data-success-view="planner">Study Planner</button>
+        <button type="button" data-success-view="goals">Goals</button>
+        <button type="button" data-success-view="notes">Course Notes</button>
+        <button type="button" data-success-view="resources">Resources</button>
+        <button type="button" data-success-view="collab">Collaboration</button>
+      </div>
+    </div>
+    <div class="coach-section">
       <h3>Select Module</h3>
       <div class="map">${moduleRows}</div>
     </div>
@@ -851,67 +890,465 @@ function bindStudyAreaActions(course, assignments, modules, postedNotes = []) {
       generateModuleFlashcards(course, modules, moduleButton.dataset.moduleFlashcards),
     );
   });
+
+  responseBody.querySelectorAll("[data-success-view]").forEach((button) => {
+    button.addEventListener("click", () =>
+      showSuccessCenter(course, assignments, modules, postedNotes, button.dataset.successView || "dashboard"),
+    );
+  });
+}
+
+function showSuccessCenter(course, assignments, modules, postedNotes, view = "dashboard") {
+  showResponse("Student Success Center", renderSuccessCenter(course, assignments, modules, postedNotes, view));
+  bindSuccessCenterActions(course, assignments, modules, postedNotes);
+}
+
+function renderSuccessCenter(course, assignments, modules, postedNotes, view = "dashboard") {
+  const currentScore = estimateCourseScore(assignments);
+  const goal = readCourseGoal(course.id);
+  const dashboard = renderLearningDashboard(course, assignments, modules, postedNotes, currentScore, goal);
+  const panels = {
+    dashboard,
+    planner: renderSmartStudyPlanner(course, assignments, modules),
+    goals: renderGoalSetter(course, currentScore, goal),
+    notes: renderCourseNoteOrganizer(course, modules),
+    resources: renderResourceRecommender(course, modules, postedNotes),
+    collab: renderCollaborationAndFuture(course),
+  };
+
+  return `
+    <p><strong>${escapeHtml(course.name)}</strong> success tools. Canvas gives the schedule and structure; downloaded files and AI power deeper tutoring.</p>
+    <div class="success-tabs">
+      ${["dashboard", "planner", "goals", "notes", "resources", "collab"]
+        .map((tab) => `<button class="${tab === view ? "is-active" : ""}" type="button" data-success-view="${tab}">${escapeHtml(successTabLabel(tab))}</button>`)
+        .join("")}
+    </div>
+    ${panels[view] || dashboard}
+  `;
+}
+
+function renderLearningDashboard(course, assignments, modules, postedNotes, currentScore, goal) {
+  const completion = assignmentCompletionRate(assignments);
+  const upcoming = assignments.filter((assignment) => assignment.dueAt).slice(0, 5);
+  const gaps = detectConceptGaps(assignments, modules, postedNotes);
+  const predicted = predictFinalGrade(currentScore, completion);
+  return `
+    <div class="success-grid">
+      <div class="insight-card">
+        <strong>Graded-only average</strong>
+        <span>${formatScore(currentScore)}</span>
+        <p>Points-weighted average of loaded graded assignments; excludes ungraded work. Not the full Canvas course grade.</p>
+        <div class="meter"><i style="width:${clamp(Number(currentScore) || 0, 0, 100)}%"></i></div>
+        <p>${goal ? `Goal: ${goal.target}% · ${numericGrade(currentScore) === null ? "No graded work" : goal.target <= currentScore ? "on track" : "needs focus"}` : "Set a goal to track progress."}</p>
+      </div>
+      <div class="insight-card">
+        <strong>Assignment Completion</strong>
+        <span>${Math.round(completion)}%</span>
+        <div class="meter"><i style="width:${clamp(completion, 0, 100)}%"></i></div>
+        <p>${assignments.length} upcoming item${assignments.length === 1 ? "" : "s"} scanned.</p>
+      </div>
+      <div class="insight-card">
+        <strong>Grade Predictor</strong>
+        <span>${formatScore(predicted)}</span>
+        <p>Projected from current score and assignment completion pace.</p>
+      </div>
+    </div>
+    <div class="coach-section">
+      <h3>Weekly Insights Report</h3>
+      <ul>${buildWeeklyInsights(course, assignments, modules, currentScore, completion).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>
+    </div>
+    <div class="coach-section">
+      <h3>Concept Gap Detector</h3>
+      <div class="map">${gaps.map((gap) => `<div class="module-row"><strong>${escapeHtml(gap.title)}</strong><span>${escapeHtml(gap.reason)}</span><p>${escapeHtml(gap.action)}</p></div>`).join("")}</div>
+    </div>
+    <div class="coach-section">
+      <h3>Smart Reminders</h3>
+      <div class="map">${upcoming.map((assignment) => `<div class="assignment-row"><strong>${escapeHtml(assignment.name)}</strong><span>${escapeHtml(assignment.dueAt ? `Due ${formatDate(assignment.dueAt)}` : "No due date")}</span><p>${escapeHtml(smartReminderText(assignment))}</p></div>`).join("") || "<p>No dated upcoming assignments found.</p>"}</div>
+    </div>
+  `;
+}
+
+function renderSmartStudyPlanner(course, assignments, modules) {
+  const plan = buildStudyPlanner(assignments, modules);
+  return `
+    <div class="coach-section">
+      <h3>Smart Study Planner</h3>
+      <div class="map">
+        ${plan.map((task, index) => `
+          <div class="assignment-row">
+            <strong>${index + 1}. ${escapeHtml(task.title)}</strong>
+            <span>${escapeHtml(task.time)}</span>
+            <p>${escapeHtml(task.action)}</p>
+          </div>
+        `).join("")}
+      </div>
+    </div>
+    <div class="coach-section">
+      <h3>Focus Mode + Pomodoro</h3>
+      <p>Use the existing Focus Sprint button after selecting a note or assignment. Start with the first planner task, then take a 5-minute break.</p>
+      <button class="inline-action" type="button" id="success-focus-sprint">Start Focus Sprint</button>
+    </div>
+  `;
+}
+
+function renderGoalSetter(course, currentScore, goal) {
+  return `
+    <div class="coach-section">
+      <h3>Goal Setter + Tracker</h3>
+      <div class="goal-row">
+        <label for="course-goal-target">Target grade %</label>
+        <input id="course-goal-target" type="number" min="0" max="100" value="${escapeHtml(goal?.target ?? 90)}">
+        <label for="course-goal-note">Goal note</label>
+        <input id="course-goal-note" type="text" value="${escapeHtml(goal?.note || "Finish assignments early and review weak concepts.")}">
+        <button class="inline-action" type="button" id="save-course-goal">Save Goal</button>
+      </div>
+      <p>Graded-only average: <strong>${escapeHtml(formatScore(currentScore))}</strong>. ${goal ? escapeHtml(goalAdvice(currentScore, goal.target)) : "Save a target to start tracking."}</p>
+    </div>
+  `;
+}
+
+function renderCourseNoteOrganizer(course, modules) {
+  const savedNote = localStorage.getItem(courseNoteKey(course.id)) || "";
+  return `
+    <div class="coach-section">
+      <h3>Course Note Organizer</h3>
+      <textarea id="course-note-text" class="course-note-input" rows="8" placeholder="Write notes linked to this course, module, or assignment.">${escapeHtml(savedNote)}</textarea>
+      <div class="connect-actions">
+        <button class="primary-btn" type="button" id="save-course-note">Save Note</button>
+        <button type="button" id="add-course-note-card">Add To Board</button>
+      </div>
+      <p>Suggested anchors: ${escapeHtml(modules.slice(0, 4).map((module) => module.name).join(", ") || "modules and assignments")}</p>
+    </div>
+  `;
+}
+
+function renderResourceRecommender(course, modules, postedNotes) {
+  const resources = recommendResources(`${course.name} ${modules.map((module) => module.name).join(" ")} ${postedNotes.map((note) => note.title).join(" ")}`);
+  return `
+    <div class="coach-section">
+      <h3>Resource Recommender</h3>
+      <div class="map">
+        ${resources.map((resource) => `<div class="module-row"><strong>${escapeHtml(resource.title)}</strong><span>${escapeHtml(resource.type)}</span><p><a href="${escapeHtml(resource.url)}" target="_blank" rel="noreferrer">${escapeHtml(resource.url)}</a></p></div>`).join("")}
+      </div>
+    </div>
+    <div class="coach-section">
+      <h3>Summarizer Tool</h3>
+      <p>Open any module, upload downloaded Canvas files, then use AI Study Guide to summarize long readings and posts.</p>
+    </div>
+  `;
+}
+
+function renderCollaborationAndFuture(course) {
+  return `
+    <div class="coach-section">
+      <h3>Social & Collaboration</h3>
+      <div class="map">
+        <div class="module-row"><strong>Study Buddies</strong><span>Privacy-first placeholder</span><p>Matching students requires school login/admin approval, so this app shows the design but does not expose classmates.</p></div>
+        <div class="module-row"><strong>Group Study Rooms</strong><span>Future feature</span><p>Could become a shared notes room or whiteboard tied to ${escapeHtml(course.name)}.</p></div>
+        <div class="module-row"><strong>Parent/Guardian View</strong><span>Optional future feature</span><p>Useful for high-school users, but it should require explicit student permission.</p></div>
+      </div>
+    </div>
+    <div class="coach-section">
+      <h3>Advanced Tools Already Supported</h3>
+      <ul>
+        <li>Assignment Breakdown: use Plan Assignment on any Canvas assignment.</li>
+        <li>Grade Predictor: shown in the Dashboard tab.</li>
+        <li>AI Tutoring: upload downloaded files, then run AI Study Guide, AI Flashcards, or AI MCQ Quiz.</li>
+      </ul>
+    </div>
+  `;
+}
+
+function bindSuccessCenterActions(course, assignments, modules, postedNotes) {
+  responseBody.querySelectorAll("[data-success-view]").forEach((button) => {
+    button.addEventListener("click", () => showSuccessCenter(course, assignments, modules, postedNotes, button.dataset.successView || "dashboard"));
+  });
+
+  const sprintButton = responseBody.querySelector("#success-focus-sprint");
+  if (sprintButton) sprintButton.addEventListener("click", startFocusSprint);
+
+  const saveGoalButton = responseBody.querySelector("#save-course-goal");
+  if (saveGoalButton) saveGoalButton.addEventListener("click", () => {
+    const target = Number(responseBody.querySelector("#course-goal-target")?.value || 90);
+    const note = responseBody.querySelector("#course-goal-note")?.value || "";
+    localStorage.setItem(courseGoalKey(course.id), JSON.stringify({ target: clamp(target, 0, 100), note }));
+    showSuccessCenter(course, assignments, modules, postedNotes, "goals");
+  });
+
+  const saveNoteButton = responseBody.querySelector("#save-course-note");
+  if (saveNoteButton) saveNoteButton.addEventListener("click", () => {
+    const value = responseBody.querySelector("#course-note-text")?.value || "";
+    localStorage.setItem(courseNoteKey(course.id), value);
+    showResponse("Course Note Saved", `<p>Your note for <strong>${escapeHtml(course.name)}</strong> was saved locally in this browser.</p>`);
+  });
+
+  const addNoteButton = responseBody.querySelector("#add-course-note-card");
+  if (addNoteButton) addNoteButton.addEventListener("click", () => {
+    const value = responseBody.querySelector("#course-note-text")?.value || "";
+    localStorage.setItem(courseNoteKey(course.id), value);
+    const note = {
+      id: `course-note-${course.id}-${Date.now()}`,
+      title: `Course Note: ${course.name}`,
+      content: value || "Add a course note before studying.",
+      topic: course.name,
+      color: "green",
+      x: 95 + (notes.length % 3) * 235,
+      y: 115 + Math.floor(notes.length / 3) * 175,
+    };
+    notes = [...notes, note];
+    selectedId = note.id;
+    render();
+    showSuccessCenter(course, assignments, modules, postedNotes, "notes");
+  });
+}
+
+function successTabLabel(tab) {
+  return {
+    dashboard: "Dashboard",
+    planner: "Planner",
+    goals: "Goals",
+    notes: "Notes",
+    resources: "Resources",
+    collab: "Collab",
+  }[tab] || "Dashboard";
+}
+
+function numericGrade(value) {
+  if (typeof value !== "number" && typeof value !== "string") return null;
+  if (typeof value === "string" && !value.trim()) return null;
+  const score = Number(value);
+  return Number.isFinite(score) ? score : null;
+}
+
+function estimateCourseScore(assignments) {
+  const scored = assignments.filter((assignment) => numericGrade(assignment.score) !== null && Number(assignment.points) > 0);
+  if (!scored.length) return null;
+  const earned = scored.reduce((total, assignment) => total + Number(assignment.score || 0), 0);
+  const possible = scored.reduce((total, assignment) => total + Number(assignment.points || 0), 0);
+  return possible ? Math.round((earned / possible) * 100) : null;
+}
+
+function assignmentCompletionRate(assignments) {
+  if (!assignments.length) return 0;
+  const completed = assignments.filter((assignment) => assignment.submittedAt || assignment.workflowState === "graded" || assignment.workflowState === "submitted").length;
+  return (completed / assignments.length) * 100;
+}
+
+function predictFinalGrade(currentScore, completion) {
+  if (numericGrade(currentScore) === null) return null;
+  const score = Number(currentScore);
+  const paceAdjustment = completion >= 80 ? 2 : completion >= 50 ? 0 : -4;
+  return clamp(Math.round(score + paceAdjustment), 0, 100);
+}
+
+function formatScore(value) {
+  return numericGrade(value) !== null ? `${Math.round(Number(value))}%` : "No graded work";
+}
+
+function readCourseGoal(courseId) {
+  try {
+    return JSON.parse(localStorage.getItem(courseGoalKey(courseId)) || "null");
+  } catch {
+    return null;
+  }
+}
+
+function courseGoalKey(courseId) {
+  return `canvasTutor.goal.${courseId}`;
+}
+
+function courseNoteKey(courseId) {
+  return `canvasTutor.courseNote.${courseId}`;
+}
+
+function goalAdvice(currentScore, target) {
+  if (numericGrade(currentScore) === null) return "No graded work.";
+  const gap = Number(target) - Number(currentScore);
+  if (gap <= 0) return "You are currently meeting this target. Protect it by finishing upcoming work early.";
+  if (gap <= 5) return `You are ${Math.round(gap)} points away. Focus on the next graded assignment and weakest concept.`;
+  return `You are ${Math.round(gap)} points away. Prioritize high-point assignments, office hours, and daily practice.`;
+}
+
+function buildWeeklyInsights(course, assignments, modules, currentScore, completion) {
+  const dueSoon = assignments.filter((assignment) => daysUntil(assignment.dueAt) <= 7 && daysUntil(assignment.dueAt) >= 0);
+  return [
+    numericGrade(currentScore) !== null
+      ? `${course.name} has a graded-only average of ${formatScore(currentScore)} for loaded assignments.`
+      : `${course.name}: No graded work in loaded assignments.`,
+    dueSoon.length
+      ? `${dueSoon.length} assignment${dueSoon.length === 1 ? "" : "s"} due in the next 7 days.`
+      : "No assignments due in the next 7 days from the current Canvas scan.",
+    completion >= 70
+      ? "Your completion pace looks solid. Keep using short review sessions before due dates."
+      : "Completion pace needs attention. Start with the earliest due item and break it into smaller tasks.",
+    modules.length
+      ? `Newest module focus: ${modules[0].name}.`
+      : "No modules were returned by Canvas for this course.",
+  ];
+}
+
+function detectConceptGaps(assignments, modules, postedNotes) {
+  const lowScores = assignments
+    .filter((assignment) => numericGrade(assignment.score) !== null && Number(assignment.points) > 0)
+    .filter((assignment) => Number(assignment.score) / Number(assignment.points) < 0.75)
+    .slice(0, 3)
+    .map((assignment) => ({
+      title: assignment.name,
+      reason: "Lower graded score",
+      action: "Review the related module, redo missed questions, and make two flashcards from the rubric.",
+    }));
+
+  const dueSoon = assignments
+    .filter((assignment) => daysUntil(assignment.dueAt) <= 3 && daysUntil(assignment.dueAt) >= 0)
+    .slice(0, 3)
+    .map((assignment) => ({
+      title: assignment.name,
+      reason: "Due soon",
+      action: "Create a 2-day plan: understand requirements, draft/solve, check rubric, submit.",
+    }));
+
+  const unreadModules = modules
+    .filter((module) => module.items.some((item) => item.type === "File" || item.type === "Page"))
+    .slice(0, 2)
+    .map((module) => ({
+      title: module.name,
+      reason: "Module material needs review",
+      action: "Download the module files, upload them to the tutor, then generate AI flashcards.",
+    }));
+
+  const announcementGap = postedNotes.length
+    ? [{
+        title: "Recent instructor updates",
+        reason: "Announcements/pages may contain hints",
+        action: "Check posted notes before starting the next assignment.",
+      }]
+    : [];
+
+  return [...lowScores, ...dueSoon, ...unreadModules, ...announcementGap].slice(0, 5);
+}
+
+function buildStudyPlanner(assignments, modules) {
+  const assignmentTasks = assignments
+    .slice(0, 5)
+    .map((assignment) => ({
+      title: assignment.name,
+      time: studyTimeEstimate(assignment),
+      action: `${assignment.dueAt ? `Due ${formatDate(assignment.dueAt)}. ` : ""}${focusAdviceFromText(assignment.name, assignment.description)}`,
+    }));
+
+  const moduleTasks = modules.slice(0, 3).map((module) => ({
+    title: `Review ${module.name}`,
+    time: "25 min",
+    action: "Download the key file, upload it to Canvas Tutor, make flashcards, then answer one MCQ set.",
+  }));
+
+  return [...assignmentTasks, ...moduleTasks].slice(0, 7);
+}
+
+function studyTimeEstimate(assignment) {
+  const text = `${assignment.name} ${assignment.description}`.toLowerCase();
+  if (text.includes("project") || text.includes("paper") || text.includes("lab")) return "60-90 min";
+  if (text.includes("quiz") || text.includes("exam") || text.includes("test")) return "45 min";
+  if (text.includes("discussion")) return "25 min";
+  return "30-45 min";
+}
+
+function smartReminderText(assignment) {
+  const days = daysUntil(assignment.dueAt);
+  if (days <= 1) return "Due very soon. Start with a 25-minute sprint and submit/check Canvas today.";
+  if (days <= 3) return "Due this week. Make a 2-day plan: understand, draft/solve, review, submit.";
+  return "Upcoming. Preview the rubric now so it does not become urgent later.";
+}
+
+function daysUntil(dateValue) {
+  if (!dateValue) return Number.POSITIVE_INFINITY;
+  const ms = new Date(dateValue).getTime() - Date.now();
+  return Math.ceil(ms / 86_400_000);
+}
+
+function recommendResources(text) {
+  const lower = String(text || "").toLowerCase();
+  const resources = [];
+  const add = (title, type, url) => resources.push({ title, type, url });
+
+  if (/data|statistics|probability|regression|machine learning|python|pandas/.test(lower)) {
+    add("Khan Academy Statistics and Probability", "Practice", "https://www.khanacademy.org/math/statistics-probability");
+    add("Google Machine Learning Crash Course", "Guide", "https://developers.google.com/machine-learning/crash-course");
+    add("Pandas Getting Started", "Docs", "https://pandas.pydata.org/docs/getting_started/");
+  }
+  if (/python|code|program|notebook|pandas/.test(lower)) {
+    add("Python Tutorial", "Docs", "https://docs.python.org/3/tutorial/");
+    add("Jupyter Notebook Documentation", "Docs", "https://docs.jupyter.org/");
+  }
+  if (/network|security|wireshark|packet/.test(lower)) {
+    add("Wireshark User Guide", "Docs", "https://www.wireshark.org/docs/wsug_html_chunked/");
+  }
+
+  if (!resources.length) {
+    add("Khan Academy", "Practice", "https://www.khanacademy.org/");
+    add("MIT OpenCourseWare", "Course library", "https://ocw.mit.edu/");
+    add("OpenStax", "Free textbooks", "https://openstax.org/");
+  }
+
+  return resources.slice(0, 5);
 }
 
 async function generateModuleNotes(course, modules, moduleId) {
-  const module = await hydrateSelectedModule(course, modules, moduleId, "Studying Module");
-  if (!module) return;
-  const analysis = analyzeModule(module);
-  const note = {
-    id: `module-note-${course.id}-${module.id}`,
-    title: `Notes: ${module.name}`,
-    content: [
-      analysis.overview,
-      ...analysis.keyPoints.map((point) => `Key point: ${point}`),
-      ...analysis.keyTerms.map((term) => `Term: ${term.term} - ${term.definition}`),
-    ].join(" "),
-    topic: course.name,
-    color: "yellow",
-    x: 95 + (notes.length % 3) * 235,
-    y: 115 + Math.floor(notes.length / 3) * 175,
-  };
-
-  notes = [...notes.filter((item) => item.id !== note.id), note];
-  selectedId = note.id;
-  render();
-  showResponse("Module Study Notes", renderModuleNotes(course, module, analysis));
-  bindModuleNoteActions(course, module);
+  const module = modules.find(item => String(item.id) === String(moduleId));
+  if (module) await runAiTutor(course, module, 'study');
 }
 
 async function generateModuleQuiz(course, modules, moduleId) {
-  const module = await hydrateSelectedModule(course, modules, moduleId, "Building Module Quiz");
-  if (!module) return;
-
-  showResponse("Module MCQ Quiz", renderModuleQuiz(course, module));
-  bindModuleNoteActions(course, module);
+  const module = modules.find(item => String(item.id) === String(moduleId));
+  if (module) await runAiTutor(course, module, 'mcq');
 }
-
 async function generateModuleFlashcards(course, modules, moduleId) {
-  const module = await hydrateSelectedModule(course, modules, moduleId, "Building Flashcards");
-  if (!module) return;
-
-  showResponse("Module Flashcards", renderModuleFlashcards(course, module));
-  bindModuleNoteActions(course, module);
+  const module = modules.find(item => String(item.id) === String(moduleId));
+  if (module) await runAiTutor(course, module, 'flashcards');
 }
 
+let moduleRequestVersion = 0;
+let currentModuleKey = "";
+function invalidateModuleRequests() { moduleRequestVersion++; currentModuleKey = ""; cancelAiGeneration(); }
+function moduleRequestCurrent(module) {
+  return module.requestVersion === moduleRequestVersion && currentModuleKey === `${module.courseId}/${module.id}`;
+}
 async function hydrateSelectedModule(course, modules, moduleId, title) {
-  const module = modules.find((item) => String(item.id) === String(moduleId));
-  if (!module) return null;
-  if (module.hydrated) return module;
-
-  showResponse(
-    title,
-    `<p>Opening <strong>${escapeHtml(module.name)}</strong> and reading its Canvas pages, files, quizzes, and assignments now.</p>`,
-  );
-
-  const hydratedItems = [];
-  for (const item of module.items) {
-    hydratedItems.push(await hydrateModuleItem(course.id, module.name, item));
+  const module = modules.find(item => String(item.id) === String(moduleId));
+  if (!module || (module.courseId && String(module.courseId) !== String(course.id))) return null;
+  cancelAiGeneration();
+  const version = ++moduleRequestVersion;
+  currentModuleKey = `${course.id}/${module.id}`;
+  module.courseId = course.id;
+  module.requestVersion = version;
+  showResponse(title, `<p role="status">Reading the actual sources in ${escapeHtml(module.name)}…</p>`);
+  try {
+    // Always refresh the selected module; do not reuse content from another selection/session.
+    const rawItems = await fetchCanvasList(`/api/v1/courses/${course.id}/modules/${module.id}/items?include[]=content_details`);
+    const items = [];
+    for (const item of rawItems) {
+      if (version !== moduleRequestVersion) return null;
+      items.push(await hydrateModuleItem(course.id, module.name, item));
+    }
+    if (version !== moduleRequestVersion) return null;
+    const uploads = module.items.filter(item => item.sourceKind === 'uploaded');
+    module.items = [...items, ...uploads];
+    module.hydrated = true;
+    return module;
+  } catch (error) {
+    if (version === moduleRequestVersion) showResponse('Module could not be read', `<p role="alert">${escapeHtml(error.message)}</p>`);
+    return null;
   }
+}
+function moduleCoverage(module) {
+  const sources = module.items.filter(hasReadableStudyText);
+  const documents = module.items.filter(item => item.type !== 'SubHeader');
+  return `<p class="coverage-summary">Based on ${sources.length} of ${documents.length} sources.${sources.length < documents.length ? ' Partial coverage: unreadable sources are excluded.' : ''}</p><details class="source-details"><summary>Sources and reading details</summary>${sources.length ? `<ul>${sources.map(item => `<li>${escapeHtml(item.title)}</li>`).join('')}</ul>` : '<p>No readable material. No study content was generated.</p>'}${renderModuleSourceReport(module)}</details>`;
+}
 
-  module.items = hydratedItems;
-  module.hydrated = true;
-  return module;
+function showUnreadableModule(course, module) {
+  showResponse('No readable module content', moduleCoverage(module) + renderDownloadedFileImport('study'));
+  bindModuleNoteActions(course, module);
 }
 
 function renderModuleNotes(course, module, analysis = analyzeModule(module)) {
@@ -1059,7 +1496,8 @@ function renderModuleQuiz(course, module) {
                           )
                           .join("")}
                       </div>
-                      <p class="mcq-answer">Correct: ${String.fromCharCode(65 + Math.max(correctIndex, 0))}. ${escapeHtml(question.answer)}</p>
+                      <p>Source: ${escapeHtml(question.source || "")} · ${escapeHtml(question.section || "body")}</p><blockquote>${escapeHtml(question.evidence || "")}</blockquote>
+      <p class="mcq-answer">Correct: ${String.fromCharCode(65 + Math.max(correctIndex, 0))}. ${escapeHtml(question.answer)}</p>
                       <p>${escapeHtml(question.explanation)}</p>
                     </div>
                   `;
@@ -1131,7 +1569,7 @@ function renderModuleFlashcards(course, module) {
 function renderDownloadedFileImport(mode) {
   return `
     <div class="coach-section">
-      <h3>Add Downloaded Canvas File</h3>
+      <h3>Optional fallback: upload an accessible copy</h3>
       <div class="file-import-row">
         <label for="downloaded-module-file-${mode}">Choose Canvas file from Downloads</label>
         <input type="file" id="downloaded-module-file-${mode}" data-module-file-import="${mode}" accept=".pdf,.zip,.ipynb,.pynb,.txt,.md,.csv,.json,.py,.js,.ts,.java,.c,.cpp,.docx,.pptx,image/*,application/pdf,application/zip">
@@ -1146,38 +1584,18 @@ function renderDownloadedFileImport(mode) {
         <button type="button" data-ai-tutor-mode="flashcards">AI Flashcards</button>
         <button type="button" data-ai-tutor-mode="mcq">AI MCQ Quiz</button>
       </div>
-      <p>Canvas gives the schedule and module list. Downloaded files give the real study text. AI turns that text into stronger explanations and practice.</p>
+      <p>AI automatically reads this selected module before generating. Upload only if an automatic source is blocked or unreadable.</p>
     </div>
   `;
 }
 
 function renderModuleSourceReport(module) {
-  if (!module.items.length) return "<p>No module items were returned by Canvas.</p>";
-
-  return module.items
-    .slice(0, 12)
-    .map((item) => {
-      const readable = hasReadableStudyText(item);
-      const status = readable ? "Readable" : "Not readable yet";
-      const detail = readable
-        ? shorten(item.summary, 120)
-        : item.summary
-          ? shorten(item.summary, 150)
-          : "Canvas returned the item title, but no readable body text or downloadable file text.";
-      const debug = item.readDebug ? `<p>Download path tried: ${escapeHtml(item.readDebug)}</p>` : "";
-      return `
-        <div class="module-row">
-          <strong>${escapeHtml(item.title)}</strong>
-          <span>${escapeHtml(`${status} · ${moduleItemLabel(item)}`)}</span>
-          <p>${escapeHtml(detail)}</p>
-          ${debug}
-        </div>
-      `;
-    })
-    .join("");
+  if (!module.items.length) return '<p>No module items returned. Check that the module is published and accessible.</p>';
+  return module.items.map(item => `<div class="module-row"><strong>${escapeHtml(item.title)}</strong><span>${item.type === 'SubHeader' ? 'Heading (skipped)' : hasReadableStudyText(item) ? 'Read' : 'Blocked / empty'} · ${escapeHtml(item.type)}</span><p>${escapeHtml(hasReadableStudyText(item) ? `${item.summary.length} characters extracted` : item.reason || studyTextProblem(item.summary) || 'No readable content returned. Check access in Canvas or upload a copy.')}</p>${item.trace?.length ? `<p>Download trace: ${escapeHtml(item.trace.map(step => `${step.stage}: ${step.status || 'transport failed'}`).join(' → '))}</p>` : ''}</div>`).join('');
 }
 
 function bindModuleNoteActions(course, module) {
+  bindAiPractice();
   const noteButton = responseBody.querySelector("#module-note-again");
   const quizButton = responseBody.querySelector("#module-quiz-from-notes");
   const flashcardQuizButton = responseBody.querySelector("#flashcards-to-quiz");
@@ -1206,7 +1624,7 @@ function summarizeModule(module) {
 
 function moduleSourceStats(module) {
   return {
-    total: module.items.length,
+    total: module.items.filter(item => item.type !== "SubHeader").length,
     readable: module.items.filter((item) => hasReadableStudyText(item)).length,
   };
 }
@@ -1226,10 +1644,7 @@ function moduleItemLabel(item) {
 }
 
 function hasReadableStudyText(item) {
-  if (!item.summary || item.summary.trim().length < 35) return false;
-  if (item.type === "File" && item.readable === false) return false;
-  if (item.readable === true) return extractUsableStudyText(item.summary).length >= 35;
-  return extractUsableStudyText(item.summary).length >= 35;
+  return item.type !== 'SubHeader' && item.readable === true && !studyTextProblem(item.summary);
 }
 
 function analyzeModule(module) {
@@ -2356,6 +2771,7 @@ async function postJson(path, payload) {
 }
 
 async function canvasApiFetch(baseUrl, token, path) {
+  if (canvasAuthFailure) throw canvasAuthFailure;
   if (isLocalHttp()) {
     return canvasProxyFetch(baseUrl, token, path);
   }
@@ -2385,6 +2801,7 @@ async function canvasApiFetch(baseUrl, token, path) {
     window.clearTimeout(timeout);
   }
 
+  if (response.status === 401) throw stopCanvasOnUnauthorized();
   if (!response.ok) {
     const details = await readErrorMessage(response);
     throw new Error(
@@ -2397,6 +2814,7 @@ async function canvasApiFetch(baseUrl, token, path) {
 }
 
 async function canvasProxyFetch(baseUrl, token, path) {
+  if (canvasAuthFailure) throw canvasAuthFailure;
   const response = await fetch("/api/canvas", {
     method: "POST",
     headers: {
@@ -2406,6 +2824,7 @@ async function canvasProxyFetch(baseUrl, token, path) {
   });
   const payload = await response.json().catch(() => ({}));
 
+  if (response.status === 401) throw stopCanvasOnUnauthorized(payload.authReason);
   if (!response.ok) {
     throw new Error(payload.error || "The local Canvas proxy could not complete the request.");
   }
@@ -2414,6 +2833,7 @@ async function canvasProxyFetch(baseUrl, token, path) {
 }
 
 async function canvasFileTextFetch(baseUrl, token, fileId, apiPath = "") {
+  if (canvasAuthFailure) throw canvasAuthFailure;
   if (!isLocalHttp()) {
     return {
       title: "Canvas file",
@@ -2432,6 +2852,7 @@ async function canvasFileTextFetch(baseUrl, token, fileId, apiPath = "") {
   });
   const payload = await response.json().catch(() => ({}));
 
+  if (response.status === 401) throw stopCanvasOnUnauthorized(payload.authReason);
   if (!response.ok) {
     return {
       title: "Canvas file",
@@ -2445,6 +2866,7 @@ async function canvasFileTextFetch(baseUrl, token, fileId, apiPath = "") {
 }
 
 async function importDownloadedModuleFile(course, module, file, mode) {
+  const requestVersion = moduleRequestVersion;
   showResponse(
     "Reading Downloaded File",
     `<p>Reading <strong>${escapeHtml(file.name)}</strong> and adding it to <strong>${escapeHtml(module.name)}</strong>.</p>`,
@@ -2452,6 +2874,7 @@ async function importDownloadedModuleFile(course, module, file, mode) {
 
   try {
     const payload = await localFileTextFetch(file);
+    if (requestVersion !== moduleRequestVersion) return;
     const readableCharacters = payload.readable ? String(payload.text || "").length : 0;
     const importedItem = {
       id: `local-file-${Date.now()}`,
@@ -2462,22 +2885,16 @@ async function importDownloadedModuleFile(course, module, file, mode) {
         ? payload.text
         : `${payload.contentType || file.type || "File"} · ${payload.reason || "The downloaded file could not be converted to study text."}`,
       readable: payload.readable,
-      sourceKind: payload.sourceKind || "file",
+      sourceKind: "uploaded",
       readDebug: "downloaded from your Canvas browser session",
     };
 
     module.items = [importedItem, ...module.items.filter((item) => item.title !== importedItem.title)];
     module.hydrated = true;
 
-    const importNotice = renderFileImportNotice(importedItem, readableCharacters, payload.reason || "");
-    if (mode === "quiz") {
-      showResponse("Module MCQ Quiz", importNotice + renderModuleQuiz(course, module));
-    } else if (mode === "flashcards") {
-      showResponse("Module Flashcards", importNotice + renderModuleFlashcards(course, module));
-    } else {
-      showResponse("Module Study Notes", importNotice + renderModuleNotes(course, module));
-    }
-    bindModuleNoteActions(course, module);
+    if (!hasReadableStudyText(importedItem)) { showUnreadableModule(course, module); return; }
+    await runAiTutor(course, module, mode === 'quiz' ? 'mcq' : mode === 'notes' ? 'study' : mode);
+
   } catch (error) {
     showResponse(
       "Downloaded File Failed",
@@ -2523,57 +2940,74 @@ async function localFileTextFetch(file) {
   return payload;
 }
 
-async function runAiTutor(course, module, mode) {
-  const payload = buildAiTutorPayload(course, module, mode);
-  showResponse(
-    "AI Tutor",
-    `<p>Building ${escapeHtml(aiModeLabel(mode))} from readable downloaded files and Canvas module structure.</p>`,
-  );
-
+let activeAiRequest = null;
+function cancelAiGeneration() { activeAiRequest?.abort(); }
+async function fetchAiTutorResult(payload, { timeoutMs = 85000 } = {}) {
+  const controller = new AbortController();
+  activeAiRequest = controller;
+  let timer, abortListener;
+  const deadline = new Promise((_, reject) => {
+    abortListener = () => reject(new Error('Generation canceled. You can try again.'));
+    controller.signal.addEventListener('abort', abortListener, {once:true});
+    timer = setTimeout(() => {
+      // Reject with the useful timeout error before aborting the transport.
+      reject(new Error('Generation timed out. Try again; your module sources are still available.'));
+      controller.abort();
+    }, timeoutMs);
+  });
   try {
-    const response = await fetch("/api/ai-tutor", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(payload),
-    });
-    const result = await response.json().catch(() => ({}));
-
-    if (!response.ok || result.error) {
-      showResponse(
-        "AI Tutor Needs Setup",
-        `<p>${escapeHtml(result.error || "AI tutor could not complete the request.")}</p>
-         <p>Keep using downloaded-file flashcards and quiz while AI is not configured.</p>`,
-      );
-      return;
-    }
-
-    showResponse("AI Tutor", renderAiTutorResult(course, module, result, mode));
-    bindModuleNoteActions(course, module);
-  } catch (error) {
-    showResponse("AI Tutor Failed", `<p>${escapeHtml(error.message || "AI tutor failed.")}</p>`);
+    return await Promise.race([
+      (async () => {
+        const response = await fetch('/api/ai-tutor', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload), signal:controller.signal});
+        const result = await response.json();
+        if (!response.ok || result.error) throw Error(result.error || `Generation failed (HTTP ${response.status}). Try again.`);
+        return result;
+      })(), deadline,
+    ]);
+  } finally {
+    clearTimeout(timer);
+    controller.signal.removeEventListener('abort', abortListener);
+    if (activeAiRequest === controller) activeAiRequest = null;
   }
 }
 
-function buildAiTutorPayload(course, module, mode) {
-  const readableItems = module.items.filter((item) => hasReadableStudyText(item));
-  const studyText = readableItems
-    .map((item) => `SOURCE: ${item.title}\nTYPE: ${moduleItemLabel(item)}\n${extractUsableStudyText(item.summary || "")}`)
-    .join("\n\n---\n\n")
-    .slice(0, 45000);
-  const canvasContext = module.items
-    .map((item) => `${item.title} (${moduleItemLabel(item)})`)
-    .join("\n")
-    .slice(0, 5000);
+async function runAiTutor(course, module, mode) {
+  module = await hydrateSelectedModule(course, [module], module.id, 'Reading selected module');
+  if (!module) return;
+  if (!module.items.some(hasReadableStudyText)) { showUnreadableModule(course, module); return; }
+  const version = module.requestVersion;
+  const payload = buildAiTutorPayload(course, module, mode);
+  showResponse('Creating your practice', `<p id="generation-progress" role="status">Creating ${mode === 'mcq' ? 'quiz questions' : 'flashcards'}…</p><button id="cancel-generation" type="button">Cancel generation</button>` + moduleCoverage(module));
+  responseBody.querySelector('#cancel-generation')?.addEventListener('click', cancelAiGeneration);
+  const started = Date.now();
+  const progressTimer = setInterval(() => {
+    const status = responseBody.querySelector('#generation-progress');
+    if (status && version === moduleRequestVersion) status.textContent = `Creating ${mode === 'mcq' ? 'quiz questions' : 'flashcards'}… ${Math.floor((Date.now() - started) / 1000)} seconds elapsed. You can cancel below.`;
+  }, 1000);
+  try {
+    const result = await fetchAiTutorResult(payload);
+    if (version !== moduleRequestVersion || !moduleRequestCurrent(module)) return;
+      assertAiPracticeResult(result, mode);
+      module.generated ||= {};
+      module.generated[mode] = {result, at: Date.now()};
+      if (mode === 'study') {
+        const note = { id: `module-note-${course.id}-${module.id}`, title: `Notes: ${module.name}`, topic: course.name, color: 'yellow', x: 20, y: 20,
+          content: [...(result.keyPoints || []).map(point => point.text), ...result.flashcards.map(card => `${card.front} ${card.back}`)].join('\n\n') };
+        notes = [...notes.filter(item => item.id !== note.id), note]; selectedId = note.id; render();
+      }
+      showResponse('AI Tutor', renderAiTutorResult(course, module, result, mode) + moduleCoverage(module));
+    bindModuleNoteActions(course, module);
+  } catch (error) {
+    if (version === moduleRequestVersion) { showResponse('Generation stopped', `<p role="alert">${escapeHtml(error.message)}</p><button type="button" data-ai-tutor-mode="${mode}">Try generation again</button>` + moduleCoverage(module)); bindModuleNoteActions(course, module); }
+  } finally { clearInterval(progressTimer); }
+}
 
-  return {
-    mode,
-    courseName: course.name,
-    moduleName: module.name,
-    canvasContext,
-    studyText,
-  };
+function buildAiTutorPayload(course, module, mode) {
+  const readable = module.items.filter(hasReadableStudyText);
+  const perSource = Math.min(12000, Math.floor(45000 / Math.max(1, readable.length)));
+  const sources = readable.map(item => ({ id: String(item.id), title: item.title, text: item.summary.slice(0, perSource) }));
+  return { mode, courseId: course.id, moduleId: module.id, courseName: course.name, moduleName: module.name, sources,
+    studyText: sources.map(item => `SOURCE ID: ${item.id}\nSOURCE: ${item.title}\n${item.text}`).join('\n\n---\n\n'), canvasContext: '' };
 }
 
 function extractUsableStudyText(text) {
@@ -2585,72 +3019,41 @@ function extractUsableStudyText(text) {
   return cleaned.slice(0, 12000);
 }
 
-function renderAiTutorResult(course, module, result, mode) {
-  return `
-    <p><strong>${escapeHtml(module.name)}</strong> · ${escapeHtml(course.name)}</p>
-    <div class="course-scan">
-      <strong>Architecture</strong>
-      <span>Canvas API = schedule/module list · Downloaded files = study content · AI = tutor questions</span>
-    </div>
-    <div class="explain-box">
-      <p>${escapeHtml(result.summary || `AI generated ${aiModeLabel(mode)} from your readable module content.`)}</p>
-    </div>
-    <div class="coach-section">
-      <h3>Key Points</h3>
-      ${result.keyPoints?.length ? `<ul>${result.keyPoints.map((point) => `<li>${escapeHtml(point)}</li>`).join("")}</ul>` : "<p>No key points returned.</p>"}
-    </div>
-    <div class="coach-section">
-      <h3>AI Flashcards</h3>
-      <div class="map">
-        ${
-          result.flashcards?.length
-            ? result.flashcards
-                .map((card, index) => `
-                  <div class="flashcard">
-                    <strong>${index + 1}. ${escapeHtml(card.front)}</strong>
-                    <span>${escapeHtml(card.back)}</span>
-                  </div>
-                `)
-                .join("")
-            : "<p>No AI flashcards returned.</p>"
-        }
-      </div>
-    </div>
-    <div class="coach-section">
-      <h3>AI MCQ Quiz</h3>
-      <div class="map">
-        ${
-          result.mcq?.length
-            ? result.mcq.map(renderAiMcqCard).join("")
-            : "<p>No AI MCQ questions returned.</p>"
-        }
-      </div>
-    </div>
-    <div class="coach-section">
-      <h3>Study Plan</h3>
-      ${result.studyPlan?.length ? `<ol>${result.studyPlan.map((step) => `<li>${escapeHtml(step)}</li>`).join("")}</ol>` : "<p>Review the flashcards, then answer the MCQs without looking.</p>"}
-    </div>
-    ${renderDownloadedFileImport(mode)}
-  `;
+function aiSourceCitation(item) {
+  return `<details class="source-citation"><summary>Source · ${escapeHtml(item.section || 'body')}</summary><p>${escapeHtml(item.source)}</p><blockquote>${escapeHtml(item.evidence)}</blockquote></details>`;
 }
-
+function renderAiTutorResult(course, module, result, mode) {
+  const cards = result.flashcards || [], questions = result.mcq || [];
+  return `<p><strong>${escapeHtml(module.name)}</strong> · ${escapeHtml(course.name)}</p>
+    ${mode !== 'mcq' && result.keyPoints?.length ? `<section class="important-points"><h3>Important points</h3><ul>${result.keyPoints.map(point => `<li>${escapeHtml(point.text)}${aiSourceCitation(point)}</li>`).join('')}</ul></section>` : ''}
+    ${mode !== 'mcq' ? `<h3>Practice questions</h3><div class="map">${cards.map((card,index) => `<details class="flashcard"><summary>${index+1}. ${escapeHtml(card.front)} <small>Reveal answer</small></summary><p>${escapeHtml(card.back)}</p>${aiSourceCitation(card)}</details>`).join('') || '<p>No flashcards returned.</p>'}</div>` : ''}
+    ${mode !== 'flashcards' ? `<h3>AI MCQ Quiz</h3><div class="map">${questions.map(renderAiMcqCard).join('') || '<p>No questions returned.</p>'}</div>` : ''}
+    <button type="button" data-ai-tutor-mode="${mode}">Generate again</button>`;
+}
 function renderAiMcqCard(question, index) {
-  return `
-    <div class="mcq-card">
-      <strong>${index + 1}. ${escapeHtml(question.question)}</strong>
-      <div class="mcq-choices">
-        ${question.choices
-          .map((choice, choiceIndex) => `
-            <span class="${choice === question.answer ? "is-correct" : ""}">
-              ${String.fromCharCode(65 + choiceIndex)}. ${escapeHtml(choice)}
-            </span>
-          `)
-          .join("")}
-      </div>
-      <p class="mcq-answer">Correct: ${escapeHtml(question.answer)}</p>
-      <p>${escapeHtml(question.explanation || "Review the source file section for this concept.")}</p>
-    </div>
-  `;
+  return `<fieldset class="mcq-card" data-ai-question data-correct="${question.choices.indexOf(question.answer)}">
+    <legend>${index+1}. ${escapeHtml(question.question)}</legend>
+    ${question.choices.map((choice,choiceIndex) => `<label class="quiz-choice"><input type="radio" name="ai-question-${index}" value="${choiceIndex}"> ${escapeHtml(choice)}</label>`).join('')}
+    <button type="button" data-check-ai-answer>Check answer</button><p data-ai-feedback role="status"></p>
+    <div data-ai-explanation hidden><p>Correct: ${escapeHtml(question.answer)}</p><p>${escapeHtml(question.explanation)}</p>${aiSourceCitation(question)}</div>
+  </fieldset>`;
+}
+function bindAiPractice() {
+  responseBody.querySelectorAll('[data-check-ai-answer]').forEach(button => button.addEventListener('click', () => {
+    const card = button.closest('[data-ai-question]');
+    const choice = card.querySelector('input:checked');
+    const feedback = card.querySelector('[data-ai-feedback]');
+    if (!choice) { feedback.textContent = 'Choose an answer first.'; return; }
+    feedback.textContent = choice.value === card.dataset.correct ? 'Correct.' : 'Not quite. Review the explanation below.';
+    card.querySelector('[data-ai-explanation]').hidden = false;
+  }));
+}
+function assertAiPracticeResult(result, mode) {
+  const cards = result.flashcards, questions = result.mcq;
+  if (!Array.isArray(cards) || !Array.isArray(questions) ||
+      (['flashcards', 'study'].includes(mode) && !cards.length) || (mode === 'mcq' && !questions.length) ||
+      cards.some(card => !card || ![card.front,card.back,card.source,card.evidence].every(value => typeof value === 'string' && value.trim())) ||
+      questions.some(q => !q || ![q.question,q.answer,q.explanation,q.source,q.evidence].every(value => typeof value === 'string' && value.trim()) || !Array.isArray(q.choices) || q.choices.length !== 4 || !q.choices.includes(q.answer))) throw Error('AI returned no valid source-grounded practice for this tool. Try generating again.');
 }
 
 function aiModeLabel(mode) {
@@ -3017,22 +3420,18 @@ function toggleSprintTask(id, done) {
 }
 
 function autoLayout() {
-  const positions = [
-    [80, 70],
-    [380, 70],
-    [80, 300],
-    [380, 300],
-    [680, 185],
-    [680, 410],
-  ];
-
-  notes = notes.map((note, index) => ({
-    ...note,
-    x: positions[index % positions.length][0],
-    y: positions[index % positions.length][1] + Math.floor(index / positions.length) * 180,
-  }));
+  const width = canvas.clientWidth || 700;
+  const columns = Math.max(1, Math.floor((width - 32) / 252));
+  const heights = Array(columns).fill(20);
+  notes.forEach((note, index) => {
+    const column = index % columns;
+    const element = [...canvas.querySelectorAll(".note")].find(item => item.dataset.id === note.id);
+    note.x = 16 + column * 252;
+    note.y = heights[column];
+    heights[column] += (element?.offsetHeight || 240) + 24;
+  });
+  canvas.style.minHeight = `${Math.max(600, ...heights)}px`;
   render();
-  runAction("organize");
 }
 
 function resetBoard() {
@@ -3051,7 +3450,11 @@ function getSelectedNote() {
 
 function getPrioritizedNotes() {
   const selected = getSelectedNote();
-  return [...notes]
+  if (!selected) return [];
+  const scopedNotes = typeof location !== "undefined" && location.hash.startsWith("#course/") && activeCourseContext
+    ? notes.filter(note => note.topic === activeCourseContext.course.name || note.id === `course-focus-${activeCourseContext.course.id}`)
+    : notes;
+  return [...scopedNotes]
     .filter((note) => note.id !== selected.id)
     .sort((left, right) => sprintScore(right) - sprintScore(left));
 }
@@ -3165,7 +3568,7 @@ function clamp(value, min, max) {
 }
 
 function escapeHtml(value) {
-  return value
+  return String(value)
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")

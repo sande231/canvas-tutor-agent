@@ -1,16 +1,25 @@
 {
-  "name": "canvas-tutor-agent",
+  "name": "canvas-tutor",
   "version": "1.0.0",
   "description": "A personal Canvas LMS tutor agent for module study notes, flashcards, MCQ quizzes, assignment planning, and daily focus emails.",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "check": "node --check server.js && node --check app.js && node --check scripts/send-digest-once.js",
+    "preview": "EMAIL_DISABLED=1 HOST=127.0.0.1 node server.js",
+    "setup:ppt": "node scripts/setup-ppt.js",
+    "test": "node --test tests/*.test.js",
+    "check": "node --check server.js && node --check app.js && node --check ui.js && node --check safe-reader.js && node --check source-quality.js && node --check scripts/send-digest-once.js",
     "send-digest": "node scripts/send-digest-once.js"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22.13.0"
   },
   "license": "UNLICENSED",
-  "private": true
+  "private": true,
+  "dependencies": {
+    "pdfjs-dist": "^6.4.299"
+  },
+  "devDependencies": {
+    "jsdom": "^29.1.1"
+  }
 }

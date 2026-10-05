@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Canvas Tutor Agent</title>
+    <title>Canvas Tutor</title>
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
@@ -31,6 +31,7 @@
             <button id="connect-canvas" class="primary-btn" type="button">Connect</button>
             <button id="import-canvas" type="button" disabled>Import Work</button>
           </div>
+          <p id="canvas-auth-error" class="helper-text" role="alert" hidden></p>
         </section>
 
         <section class="panel daily-mail">
@@ -142,6 +143,8 @@
       </aside>
     </main>
 
+    <script src="source-quality.js"></script>
     <script src="app.js"></script>
+    <script src="ui.js"></script>
   </body>
 </html>

@@ -1,6 +1,7 @@
 .env
 .DS_Store
 node_modules/
+.tools/
 outbox/
 logs/
 daily-digest-config.json
