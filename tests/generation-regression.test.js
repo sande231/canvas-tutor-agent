@@ -27,7 +27,7 @@ test('actual Responses request contains JSON instruction and complete schema; AP
    const body=JSON.parse(options.body);
    assert.match(body.input[0].content[0].text,/json/i);
    assert.match(body.instructions,/sourceId/);assert.match(body.instructions,/evidence/);
-   assert.equal(body.text.format.type,'json_object');
+   assert.equal(body.text.format.type,'json_schema');assert.equal(body.text.format.strict,true);assert.equal(body.text.format.schema.additionalProperties,false);
    return {ok:true,json:async()=>({status:'completed',output_text:JSON.stringify(result)})};
   };
   const success=await invoke(input);assert.equal(success.body.flashcards.length,1);assert.equal(success.body.flashcards[0].source,'Behavioral Ethics');
@@ -77,6 +77,7 @@ test('real Create buttons → actual server validation → interactive flashcard
  const original=global.fetch,oldKey=process.env.OPENAI_API_KEY;process.env.OPENAI_API_KEY='fixture-key';
  const dom=new JSDOM(fs.readFileSync(path.join(root,'index.html'),'utf8'),{url:'http://127.0.0.1:4177',runScripts:'outside-only',pretendToBeVisual:true});
  const w=dom.window;let calls=0;
+ w.localStorage.setItem('canvas-tutor-ai-options-v1',JSON.stringify({count:1,difficulty:'mixed'}));
  global.fetch=async(url, options)=>{
   calls++;
   assert.match(JSON.parse(options.body).input[0].content[0].text, /\[S1P1\]/);
@@ -84,6 +85,7 @@ test('real Create buttons → actual server validation → interactive flashcard
   return {ok:true,json:async()=>({status:'completed',output_text:JSON.stringify(output)})};
  };
  w.fetch=async(url,options)=>{
+  if(url==='/api/ai-status')return {ok:true,json:async()=>({configured:true,model:'fixture'})};
   const body=JSON.parse(options?.body||'{}');let data;
   if(url==='/api/ai-tutor'){const outcome=await invoke(body);return {ok:outcome.status===200,json:async()=>outcome.body};}
   const p=body.path||'';

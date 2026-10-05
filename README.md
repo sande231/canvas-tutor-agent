@@ -426,3 +426,38 @@ A DOM-based live check also exercised both Create buttons through the running
 preview and real AI service with synthetic Canvas page content: five visible
 flashcards, five quiz questions, answer reveal, quiz feedback, and return-to-tab
 retention all passed. Run `npm test` for the offline regression suite.
+
+### Practice counts and AI availability
+
+Choose 5, 10, 15, 20 or 30 cards/questions, or a custom count from 1 to 50,
+and easy, medium, hard or mixed difficulty before generating. These preferences
+are saved in this browser independently of notes; credentials are not saved
+with them. The options also appear beside the AI buttons for uploaded material.
+Settings and the AI Tutor tab show whether the server has an AI key configured
+and which model it uses (`GET /api/ai-status`). This checks configuration, not
+whether the provider will accept the key.
+
+Generation runs sequential batches of at most 10, passing earlier questions to
+avoid repetition and merging distinct, validated results. Two additional calls
+at most can fill a shortfall. Cancel keeps completed items; switching modules
+still discards late results. The displayed “Made N of M” count reports shortages
+and provider failures without inventing replacement questions. Source excerpts
+remain limited to 12,000 characters per source and 45,000 total, shared across
+readable sources; the reading details disclose this coverage limit.
+
+The backend uses the Responses API's strict `text.format` JSON schema. The
+configured default, `gpt-5-mini`, supports this format; an explicit unsupported
+schema/model response triggers one fallback to JSON mode. Both paths use the
+same grounding validation and server-attached source passages. See OpenAI's
+[structured output guide](https://developers.openai.com/api/docs/guides/structured-outputs)
+and [GPT-5 mini model capabilities](https://developers.openai.com/api/docs/models/gpt-5-mini).
+Output budgets include reasoning headroom. An incomplete response records its
+`incomplete_details.reason` (without content or secrets) and retries once with
+fewer items. HTTP 429/5xx responses get one short delayed retry. All retries for
+one batch share a 75-second server deadline; completed browser batches survive
+later failures. See [reasoning token budgets](https://developers.openai.com/api/docs/guides/reasoning).
+
+Phase 1 regression tests use mocked Canvas and OpenAI responses, including the
+full 20-question module-to-quiz flow, smaller retries, top-ups, cancellation,
+partial results and configuration checks. They do not establish live model
+latency, account access or whether a particular module supports the chosen count.

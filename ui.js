@@ -106,7 +106,7 @@ async function renderCourseTab(context, tab) {
     }
     const attr = tab === 'flashcards' ? 'data-module-flashcards' : tab === 'quizzes' ? 'data-module-quiz' : 'data-module-notes';
     const action = tab === 'ai-tutor' ? 'Open study material & AI tools' : tab === 'modules' ? 'Study module' : `Create ${tab}`;
-    showResponse(tab === 'ai-tutor' ? 'AI Tutor' : tab[0].toUpperCase() + tab.slice(1), `<p>${tab === 'ai-tutor' ? 'Choose a module, then use AI Study Guide or upload downloaded materials. AI requires a configured server key.' : 'Choose course material to begin.'}</p><div class="map">${modules.map(module => `<div class="module-row"><strong>${escapeHtml(module.name)}</strong><span>${module.hydrated ? module.items.length : module.itemCount || ""} ${module.hydrated ? "items read" : "items · read when selected"}</span><button type="button" ${attr}="${module.id}">${action}</button></div>`).join('') || '<p>No modules returned for this course. Use Notes to write your own study material.</p>'}</div>`);
+    showResponse(tab === 'ai-tutor' ? 'AI Tutor' : tab[0].toUpperCase() + tab.slice(1), `<p>${tab === 'ai-tutor' ? 'Choose a module, then use AI Study Guide or upload downloaded materials. AI requires a configured server key.' : 'Choose course material to begin.'}</p>${renderAiOptions()}${renderAiStatus()}<div class="map">${modules.map(module => `<div class="module-row"><strong>${escapeHtml(module.name)}</strong><span>${module.hydrated ? module.items.length : module.itemCount || ""} ${module.hydrated ? "items read" : "items · read when selected"}</span><button type="button" ${attr}="${module.id}">${action}</button></div>`).join('') || '<p>No modules returned for this course. Use Notes to write your own study material.</p>'}</div>`);
   }
   bindWorkspace(context);
 }
@@ -132,6 +132,8 @@ async function renderRoute() {
       viewContent.insertAdjacentHTML('beforeend', '<a class="text-link" href="#board">Continue to saved study board →</a>');
       responseDrawer.hidden = true;
     } else {
+      viewContent.insertAdjacentHTML('beforeend', '<section class="panel"><h2>AI configuration</h2>' + renderAiStatus() + '</section>');
+      refreshAiStatus(viewContent);
       mailPanel.hidden = false;
       try {
         const state = await fetch('/api/daily-digest/status').then(response => response.json());

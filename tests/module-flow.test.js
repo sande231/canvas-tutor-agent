@@ -6,7 +6,8 @@ const { JSDOM } = require('jsdom');
 const root = path.join(__dirname, '..');
 function app(handler) {
   const dom = new JSDOM(fs.readFileSync(path.join(root,'index.html'),'utf8'), {url:'http://127.0.0.1:4177',runScripts:'outside-only'});
-  dom.window.fetch = async (url, options) => ({ok:true,status:200,json:async()=>handler(url, JSON.parse(options.body))});
+  dom.window.localStorage.setItem('canvas-tutor-ai-options-v1',JSON.stringify({count:1,difficulty:'mixed'}));
+  dom.window.fetch = async (url, options) => ({ok:true,status:200,json:async()=>url === '/api/ai-status' ? {configured:true,model:'fixture'} : handler(url, JSON.parse(options?.body || '{}'))});
   dom.window.eval(fs.readFileSync(path.join(root,'source-quality.js'),'utf8') + '\n' + fs.readFileSync(path.join(root,'app.js'),'utf8'));
   return dom;
 }

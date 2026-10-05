@@ -850,6 +850,7 @@ function renderStudyAreaDetails(course, assignments, modules = [], postedNotes =
 }
 
 function bindStudyAreaActions(course, assignments, modules, postedNotes = []) {
+  bindAiOptions();
   const button = responseBody.querySelector("#add-course-assignments");
   if (button) button.addEventListener("click", () => {
     if (!assignments.length) return;
@@ -1343,7 +1344,7 @@ async function hydrateSelectedModule(course, modules, moduleId, title) {
 function moduleCoverage(module) {
   const sources = module.items.filter(hasReadableStudyText);
   const documents = module.items.filter(item => item.type !== 'SubHeader');
-  return `<p class="coverage-summary">Based on ${sources.length} of ${documents.length} sources.${sources.length < documents.length ? ' Partial coverage: unreadable sources are excluded.' : ''}</p><details class="source-details"><summary>Sources and reading details</summary>${sources.length ? `<ul>${sources.map(item => `<li>${escapeHtml(item.title)}</li>`).join('')}</ul>` : '<p>No readable material. No study content was generated.</p>'}${renderModuleSourceReport(module)}</details>`;
+  return `<p class="coverage-summary">Based on ${sources.length} of ${documents.length} sources.${sources.length < documents.length ? ' Partial coverage: unreadable sources are excluded.' : ''}</p><details class="source-details"><summary>Sources and reading details</summary><p>AI uses excerpts of up to 12,000 characters per source and 45,000 total, shared across readable sources. Longer documents are not covered in full.</p>${sources.length ? `<ul>${sources.map(item => `<li>${escapeHtml(item.title)}</li>`).join('')}</ul>` : '<p>No readable material. No study content was generated.</p>'}${renderModuleSourceReport(module)}</details>`;
 }
 
 function showUnreadableModule(course, module) {
@@ -1579,6 +1580,7 @@ function renderDownloadedFileImport(mode) {
     </div>
     <div class="coach-section">
       <h3>AI Tutor From Study Content</h3>
+      ${renderAiOptions()}${renderAiStatus()}
       <div class="ai-action-grid">
         <button type="button" data-ai-tutor-mode="study">AI Study Guide</button>
         <button type="button" data-ai-tutor-mode="flashcards">AI Flashcards</button>
@@ -1595,6 +1597,7 @@ function renderModuleSourceReport(module) {
 }
 
 function bindModuleNoteActions(course, module) {
+  bindAiOptions();
   bindAiPractice();
   const noteButton = responseBody.querySelector("#module-note-again");
   const quizButton = responseBody.querySelector("#module-quiz-from-notes");
@@ -2940,11 +2943,80 @@ async function localFileTextFetch(file) {
   return payload;
 }
 
+const aiOptionsKey = 'canvas-tutor-ai-options-v1';
+function readAiOptions() {
+  let saved;
+  try { saved = JSON.parse(localStorage.getItem(aiOptionsKey) || '{}'); } catch { saved = {}; }
+  const count = Number(saved?.count);
+  return {count: Number.isFinite(count) && count >= 1 ? Math.min(50, Math.floor(count)) : 5,
+    difficulty: ['easy','medium','hard','mixed'].includes(saved?.difficulty) ? saved.difficulty : 'mixed'};
+}
+function renderAiOptions() {
+  const {count,difficulty} = readAiOptions();
+  const presets = [5,10,15,20,30], custom = !presets.includes(count);
+  return `<fieldset class="ai-options"><legend>Practice options</legend>
+    <label>Number of cards or questions <select data-ai-count>${presets.map(n => `<option value="${n}" ${n === count ? 'selected' : ''}>${n}</option>`).join('')}<option value="custom" ${custom ? 'selected' : ''}>Custom (1–50)</option></select></label>
+    <label data-ai-custom-label ${custom ? '' : 'hidden'}>Custom count <input data-ai-custom type="number" min="1" max="50" step="1" value="${count}" required></label>
+    <label>Difficulty <select data-ai-difficulty>${['easy','medium','hard','mixed'].map(level => `<option value="${level}" ${level === difficulty ? 'selected' : ''}>${level[0].toUpperCase()+level.slice(1)}</option>`).join('')}</select></label>
+    <p>Up to 10 items per call. Larger sets are generated in batches; you can cancel and keep completed items.</p></fieldset>`;
+}
+function bindAiOptions(root = responseBody) {
+  root.querySelectorAll('.ai-options').forEach(panel => {
+    if (panel.dataset.bound) return;
+    panel.dataset.bound = 'true';
+    panel.addEventListener('change', () => {
+      const custom = panel.querySelector('[data-ai-count]').value === 'custom';
+      panel.querySelector('[data-ai-custom-label]').hidden = !custom;
+      const input = panel.querySelector('[data-ai-custom]');
+      if (custom && !input.checkValidity()) { input.reportValidity(); return; }
+      const count = Number(custom ? input.value : panel.querySelector('[data-ai-count]').value);
+      const difficulty = panel.querySelector('[data-ai-difficulty]').value;
+      try { localStorage.setItem(aiOptionsKey, JSON.stringify({count,difficulty})); } catch { /* Preferences are optional. */ }
+    });
+  });
+  refreshAiStatus(root);
+}
+function selectedAiOptions() {
+  const panel = responseBody.querySelector('.ai-options');
+  if (!panel) return readAiOptions();
+  const custom = panel.querySelector('[data-ai-count]').value === 'custom';
+  const input = panel.querySelector('[data-ai-custom]');
+  if (custom && !input.reportValidity()) return null;
+  return { count:Number(custom ? input.value : panel.querySelector('[data-ai-count]').value), difficulty:panel.querySelector('[data-ai-difficulty]').value };
+}
+function renderAiStatus() { return '<p data-ai-status role="status">Checking AI configuration…</p>'; }
+async function fetchAiStatus() {
+  const controller = new AbortController();
+  let timer;
+  try {
+    return await Promise.race([(async () => {
+      const response = await fetch('/api/ai-status', {signal:controller.signal});
+      const status = await response.json();
+      if (!response.ok || typeof status.configured !== 'boolean' || typeof status.model !== 'string') throw Error('AI status unavailable. Check the server and try again.');
+      return status;
+    })(), new Promise((_,reject) => { timer = setTimeout(() => { controller.abort(); reject(Error('AI status check timed out. Check the server and try again.')); },8000); })]);
+  } finally { clearTimeout(timer); }
+}
+async function refreshAiStatus(root) {
+  const node = root.querySelector('[data-ai-status]');
+  if (!node) return;
+  try {
+    const status = await fetchAiStatus();
+    if (!node.isConnected) return;
+    node.textContent = status.configured ? `AI configured · ${status.model}` : `AI is not configured · ${status.model}. Add OPENAI_API_KEY privately in the server .env and restart. No key is entered in this browser.`;
+    root.querySelectorAll('[data-ai-tutor-mode], [data-module-flashcards], [data-module-quiz], [data-module-notes]').forEach(button => {button.disabled = !status.configured;});
+  } catch (error) { if (node.isConnected) { node.setAttribute('role','alert'); node.textContent = error.message; } }
+}
+
+let activeAiGeneration = null;
 let activeAiRequest = null;
-function cancelAiGeneration() { activeAiRequest?.abort(); }
-async function fetchAiTutorResult(payload, { timeoutMs = 85000 } = {}) {
+function cancelAiGeneration() { activeAiGeneration?.abort(); activeAiRequest?.abort(); }
+async function fetchAiTutorResult(payload, { timeoutMs = 85000, signal } = {}) {
   const controller = new AbortController();
   activeAiRequest = controller;
+  const cancel = () => controller.abort();
+  if (signal?.aborted) { activeAiRequest = null; throw Error('Generation canceled.'); }
+  signal?.addEventListener('abort',cancel,{once:true});
   let timer, abortListener;
   const deadline = new Promise((_, reject) => {
     abortListener = () => reject(new Error('Generation canceled. You can try again.'));
@@ -2960,33 +3032,93 @@ async function fetchAiTutorResult(payload, { timeoutMs = 85000 } = {}) {
       (async () => {
         const response = await fetch('/api/ai-tutor', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload), signal:controller.signal});
         const result = await response.json();
-        if (!response.ok || result.error) throw Error(result.error || `Generation failed (HTTP ${response.status}). Try again.`);
+        if (!response.ok || result.error) throw Error([result.error || `Generation failed (HTTP ${response.status}). Try again.`, ...(result.warnings || [])].join(' '));
         return result;
       })(), deadline,
     ]);
   } finally {
     clearTimeout(timer);
     controller.signal.removeEventListener('abort', abortListener);
+    signal?.removeEventListener('abort',cancel);
     if (activeAiRequest === controller) activeAiRequest = null;
   }
 }
 
+function practiceItemKey(text) {
+  return String(text).normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu,' ').trim();
+}
+async function generateAiBatches(payload, {signal, onProgress = () => {}} = {}) {
+  const requested = payload.count;
+  const key = payload.mode === 'mcq' ? 'mcq' : 'flashcards';
+  const result = {flashcards:[],mcq:[],keyPoints:[],studyPlan:[],summary:'',warnings:[],requestedCount:requested,difficulty:payload.difficulty};
+  const planned = Math.ceil(requested / 10);
+  const seen = new Set(), points = new Set();
+  for (let call = 0; call < planned + 2 && result[key].length < requested; call++) {
+    if (signal?.aborted) { result.warnings.push('Generation canceled. Completed items were kept.'); break; }
+    onProgress(result[key].length, call + 1, call >= planned);
+    try {
+      const batch = await fetchAiTutorResult({...payload,count:Math.min(10,requested - result[key].length),
+        previousQuestions:result[key].map(item => item.question || item.front)}, {signal});
+      if (signal?.aborted) throw Error('Generation canceled. Completed items were kept.');
+      if (!Array.isArray(batch.flashcards) || !Array.isArray(batch.mcq)) throw Error('AI response is missing its practice arrays.');
+      if (batch[key].length) assertAiPracticeResult(batch, payload.mode);
+      for (const item of batch[key]) {
+        const identity = practiceItemKey(item.question || item.front);
+        if (!seen.has(identity) && result[key].length < requested) { seen.add(identity); result[key].push(item); }
+      }
+      for (const point of batch.keyPoints || []) {
+        const identity = practiceItemKey(point.text);
+        if (!points.has(identity) && result.keyPoints.length < requested) {points.add(identity); result.keyPoints.push(point);}
+      }
+      result.model = batch.model;
+      result.warnings.push(...(batch.warnings || []));
+    } catch (error) { result.warnings.push(error.message); result.stopped = true; break; }
+  }
+  result.warnings = [...new Set(result.warnings)];
+  result.madeCount = result[key].length;
+  result.shortfall = result.madeCount < requested;
+  result.notice = `Made ${result.madeCount} of ${requested}.` + (result.shortfall
+    ? result.stopped || signal?.aborted ? ' Generation stopped; completed items were kept.' : ' No more valid, distinct, cited items were returned after two top-up attempts.' : '');
+  return result;
+}
 async function runAiTutor(course, module, mode) {
+  const options = selectedAiOptions();
+  if (!options) return;
+  invalidateModuleRequests();
+  const startingVersion = moduleRequestVersion;
+  try {
+    const status = await fetchAiStatus();
+    if (startingVersion !== moduleRequestVersion) return;
+    if (!status.configured) throw Error('AI is not configured. Add OPENAI_API_KEY privately to the server .env and restart before generating.');
+  } catch (error) {
+    if (startingVersion === moduleRequestVersion) {
+      showResponse('AI unavailable', `<p role="alert">${escapeHtml(error.message)}</p>` + renderAiOptions() + '<button type="button" data-ai-tutor-mode="'+mode+'">Try again</button>');
+      bindModuleNoteActions(course,module);
+    }
+    return;
+  }
   module = await hydrateSelectedModule(course, [module], module.id, 'Reading selected module');
   if (!module) return;
   if (!module.items.some(hasReadableStudyText)) { showUnreadableModule(course, module); return; }
   const version = module.requestVersion;
-  const payload = buildAiTutorPayload(course, module, mode);
-  showResponse('Creating your practice', `<p id="generation-progress" role="status">Creating ${mode === 'mcq' ? 'quiz questions' : 'flashcards'}…</p><button id="cancel-generation" type="button">Cancel generation</button>` + moduleCoverage(module));
+  const controller = new AbortController();
+  activeAiGeneration = controller;
+  const payload = {...buildAiTutorPayload(course, module, mode), ...options};
+  showResponse('Creating your practice', `<p id="generation-progress" role="status">Creating ${options.count} ${mode === 'mcq' ? 'quiz questions' : 'flashcards'}…</p><button id="cancel-generation" type="button">Cancel generation</button>` + moduleCoverage(module));
   responseBody.querySelector('#cancel-generation')?.addEventListener('click', cancelAiGeneration);
   const started = Date.now();
-  const progressTimer = setInterval(() => {
+  let progress = `Made 0 of ${options.count}.`;
+  const updateProgress = () => {
     const status = responseBody.querySelector('#generation-progress');
-    if (status && version === moduleRequestVersion) status.textContent = `Creating ${mode === 'mcq' ? 'quiz questions' : 'flashcards'}… ${Math.floor((Date.now() - started) / 1000)} seconds elapsed. You can cancel below.`;
-  }, 1000);
+    if (status && version === moduleRequestVersion) status.textContent = `${progress} ${Math.floor((Date.now() - started) / 1000)} seconds elapsed. You can cancel below.`;
+  };
+  const progressTimer = setInterval(updateProgress, 1000);
   try {
-    const result = await fetchAiTutorResult(payload);
+    const result = await generateAiBatches(payload, {signal:controller.signal, onProgress:(made,batch,topUp) => {
+      progress = `Made ${made} of ${options.count}. ${topUp ? 'Topping up' : 'Generating'} batch ${batch}…`; updateProgress();
+    }});
     if (version !== moduleRequestVersion || !moduleRequestCurrent(module)) return;
+    if (result.madeCount) {
       assertAiPracticeResult(result, mode);
       module.generated ||= {};
       module.generated[mode] = {result, at: Date.now()};
@@ -2995,11 +3127,12 @@ async function runAiTutor(course, module, mode) {
           content: [...(result.keyPoints || []).map(point => point.text), ...result.flashcards.map(card => `${card.front} ${card.back}`)].join('\n\n') };
         notes = [...notes.filter(item => item.id !== note.id), note]; selectedId = note.id; render();
       }
-      showResponse('AI Tutor', renderAiTutorResult(course, module, result, mode) + moduleCoverage(module));
+    }
+    showResponse(result.madeCount ? 'AI Tutor' : 'Generation stopped', renderAiTutorResult(course, module, result, mode) + moduleCoverage(module));
     bindModuleNoteActions(course, module);
   } catch (error) {
     if (version === moduleRequestVersion) { showResponse('Generation stopped', `<p role="alert">${escapeHtml(error.message)}</p><button type="button" data-ai-tutor-mode="${mode}">Try generation again</button>` + moduleCoverage(module)); bindModuleNoteActions(course, module); }
-  } finally { clearInterval(progressTimer); }
+  } finally { clearInterval(progressTimer); if (activeAiGeneration === controller) activeAiGeneration = null; }
 }
 
 function buildAiTutorPayload(course, module, mode) {
@@ -3025,10 +3158,11 @@ function aiSourceCitation(item) {
 function renderAiTutorResult(course, module, result, mode) {
   const cards = result.flashcards || [], questions = result.mcq || [];
   return `<p><strong>${escapeHtml(module.name)}</strong> · ${escapeHtml(course.name)}</p>
+    ${result.notice ? `<p role="${result.shortfall ? 'alert' : 'status'}">${escapeHtml(result.notice)} ${escapeHtml((result.warnings || []).join(' '))}</p>` : ''}
     ${mode !== 'mcq' && result.keyPoints?.length ? `<section class="important-points"><h3>Important points</h3><ul>${result.keyPoints.map(point => `<li>${escapeHtml(point.text)}${aiSourceCitation(point)}</li>`).join('')}</ul></section>` : ''}
     ${mode !== 'mcq' ? `<h3>Practice questions</h3><div class="map">${cards.map((card,index) => `<details class="flashcard"><summary>${index+1}. ${escapeHtml(card.front)} <small>Reveal answer</small></summary><p>${escapeHtml(card.back)}</p>${aiSourceCitation(card)}</details>`).join('') || '<p>No flashcards returned.</p>'}</div>` : ''}
     ${mode !== 'flashcards' ? `<h3>AI MCQ Quiz</h3><div class="map">${questions.map(renderAiMcqCard).join('') || '<p>No questions returned.</p>'}</div>` : ''}
-    <button type="button" data-ai-tutor-mode="${mode}">Generate again</button>`;
+    ${renderAiOptions()}${renderAiStatus()}<button type="button" data-ai-tutor-mode="${mode}">Generate again</button>`;
 }
 function renderAiMcqCard(question, index) {
   return `<fieldset class="mcq-card" data-ai-question data-correct="${question.choices.indexOf(question.answer)}">

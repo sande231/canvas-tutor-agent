@@ -1042,3 +1042,11 @@ blockquote { margin: 16px 0; padding-left: 14px; border-left: 3px solid var(--li
 .important-points { padding: 20px; background: #f0f6ee; border-radius: 10px; margin: 22px 0; }
 .important-points li { margin: 12px 0; line-height: 1.6; }
 .flashcard { padding: 18px; }
+
+/* Native, keyboard-accessible generation preferences. */
+.ai-options { margin: 1rem 0; padding: 1rem; border: 1px solid var(--line, #d9e2dd); border-radius: .6rem; display: flex; flex-wrap: wrap; gap: 1rem; }
+.ai-options legend { font-weight: 700; }
+.ai-options label { display: flex; flex-direction: column; gap: .4rem; flex: 1 1 10rem; }
+.ai-options label[hidden] { display: none; }
+.ai-options select, .ai-options input { font: inherit; padding: .65rem; border: 1px solid #bccbc3; border-radius: .35rem; background: white; color: inherit; width: 100%; }
+.ai-options p { flex-basis: 100%; margin: 0; }

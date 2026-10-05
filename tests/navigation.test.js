@@ -14,6 +14,7 @@ function createApp(saved) {
   const requests = [];
   w.fetch = async (url, options) => {
     requests.push(url);
+    if (url === '/api/ai-status') return {ok:true,json:async()=>({configured:true,model:'fixture-model'})};
     if (url === '/api/daily-digest/status') return { json: async () => ({ deliveryMode: 'disabled' }) };
     if (url !== '/api/canvas') throw Error('Unexpected network request');
     const body = JSON.parse(options.body);
@@ -52,6 +53,10 @@ test('connection → actual courses → scoped tabs → dashboard → saved boar
       await route(w, `course/1/${tab}`);
       assert.equal(w.document.querySelector('.course-tabs [aria-current]').hash, `#course/1/${tab}`);
       assert.ok(w.document.querySelector('#response-body').textContent.trim());
+      if (['ai-tutor','flashcards','quizzes'].includes(tab)) {
+        assert.match(w.document.querySelector('[data-ai-status]').textContent,/AI configured.*fixture-model/);
+        assert.ok(w.document.querySelector('.ai-options select'));
+      }
     }
     await route(w, 'course/2/modules');
     assert.match(w.document.querySelector('#response-body').textContent, /Color/);
@@ -79,6 +84,7 @@ test('connection → actual courses → scoped tabs → dashboard → saved boar
     assert.match(refreshed.w.document.querySelector('#canvas').textContent, /New note/);
     refreshed.dom.window.close();
     await route(w, 'settings');
+    assert.match(w.document.querySelector('#view-content [data-ai-status]').textContent,/AI configured.*fixture-model/);
     assert.equal(w.document.querySelector('#save-digest').disabled, true);
     assert.equal(w.document.querySelector('#send-test-digest').disabled, true);
     assert.ok(!requests.some(url => url.includes('/test') || url.includes('/config')));
