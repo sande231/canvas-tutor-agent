@@ -225,3 +225,16 @@ test('concept normalization merges cosmetic variants without collapsing programm
  assert.notEqual(shared.indexedConceptId('C++'),shared.indexedConceptId('C#'));
  assert.notEqual(shared.indexedConceptId('C++'),shared.indexedConceptId('C'));
 });
+
+test('static route serves the shared browser script while private files stay blocked',async()=>{
+ function request(url) {
+  return new Promise(resolve=>{
+   const response={writeHead(status){this.status=status;},end(body){resolve({status:this.status,body:String(body)});}};
+   server.server.listeners('request')[0]({method:'GET',url,headers:{host:'localhost:4177'}},response);
+  });
+ }
+ const script=await request('/source-index.js');assert.equal(script.status,200);
+ assert.equal(script.body,fs.readFileSync(path.join(root,'source-index.js'),'utf8'));
+ assert.equal((await request('/.env')).status,403);
+ assert.equal((await request('/server.js')).status,403);
+});

@@ -1304,7 +1304,7 @@ function serveStatic(request, response) {
   const requestedPath = url.pathname === "/" ? "/index.html" : url.pathname;
   const filePath = path.normalize(path.join(root, requestedPath));
 
-  if (!["/index.html", "/app.js", "/ui.js", "/source-quality.js", "/styles.css"].includes(requestedPath)) {
+  if (!["/index.html", "/app.js", "/ui.js", "/source-quality.js", "/source-index.js", "/styles.css"].includes(requestedPath)) {
     response.writeHead(403);
     response.end("Forbidden");
     return;
