@@ -271,6 +271,8 @@ async function connectCanvas() {
   if (connectCanvasButton.disabled) return;
   // Only an explicit Connect action clears the authentication stop condition.
   canvasAuthFailure = null;
+  canvasReadingSession++;
+  invalidateModuleRequests();
   showConnectError("");
   importCanvasButton.disabled = true;
   const baseUrl = normalizeCanvasUrl(canvasUrlInput.value);
@@ -548,15 +550,46 @@ async function fetchCourseDiscussions(courseId) {
   }
 }
 
-async function hydrateModuleItem(courseId, moduleName, item) {
+function canvasHtmlMaterial(html) {
+  const template = document.createElement('template');
+  template.innerHTML = String(html || '');
+  template.content.querySelectorAll('script,style,nav,footer,iframe').forEach(node => node.remove());
+  const links = new Map();
+  for (const anchor of template.content.querySelectorAll('a[href]')) {
+    try {
+      const base = new URL(canvasConnection.baseUrl);
+      const url = new URL(anchor.getAttribute('href'), base.href + '/');
+      const match = url.pathname.match(/\/files\/(\d+)(?:\/|$)/);
+      if (url.origin === base.origin && !url.username && !url.password && match) {
+        const id = match[1].replace(/^0+(?=\d)/,'');
+        links.set(id, {id,title:anchor.textContent.trim() || `Linked Canvas file ${id}`});
+      }
+    } catch { /* Only same-origin Canvas file links are supported. */ }
+  }
+  template.content.querySelectorAll('h1,h2,h3,h4,h5,h6').forEach(node => node.replaceWith(document.createTextNode(`\nSection: ${node.textContent.trim()}\n`)));
+  template.content.querySelectorAll('p,div,li,br,pre,tr').forEach(node => {node.before(document.createTextNode('\n'));node.after(document.createTextNode('\n'));});
+  return {text:template.content.textContent.replace(/[ \t]+/g,' ').replace(/\n[ \t]+/g,'\n').replace(/\n{3,}/g,'\n\n').trim(), links:[...links.values()]};
+}
+function sourceFromReading(baseItem, result) {
+  const text = String(result.text || '');
+  const qualityProblem = result.readable ? studyTextProblem(text) : '';
+  const readable = Boolean(result.readable && !qualityProblem);
+  return {...baseItem, title:baseItem.type === 'ExternalUrl' ? baseItem.title : result.title || baseItem.title,
+    summary:text, readable, status:readable ? 'read' : 'blocked', sourceKind:result.sourceKind,
+    reading:result.reading || {characters:text.length,truncated:false,limits:[],coverageKnown:['page','discussion','assignment','quiz'].includes(result.sourceKind)}, archiveSources:result.sources || [],
+    trace:result.trace || [], reason:readable ? '' : qualityProblem || result.reason || 'No readable text found. Check access or upload an accessible copy.'};
+}
+async function hydrateModuleItem(courseId, moduleName, item, context = {}) {
   const baseItem = normalizeModuleItem(moduleName, item);
   const prefix = `/api/v1/courses/${encodeURIComponent(courseId)}`;
+  const readFile = context.readFile || (id => canvasFileTextFetch(canvasConnection.baseUrl, canvasConnection.token, id));
+  let linkedFiles = [];
   try {
     if (baseItem.type === "SubHeader") return { ...baseItem, readable: false, status: "heading", reason: "Section heading; no document to read." };
     let result;
     if (baseItem.type === "File") {
       if (!baseItem.contentId) throw Error("Canvas did not supply a file ID. Open the file in Canvas or upload an accessible copy.");
-      result = await canvasFileTextFetch(canvasConnection.baseUrl, canvasConnection.token, baseItem.contentId);
+      result = await readFile(baseItem.contentId);
     } else if (baseItem.type === "ExternalUrl") {
       const response = await fetch('/api/external-text', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({url: baseItem.externalUrl || baseItem.htmlUrl}) });
       result = await response.json();
@@ -576,15 +609,22 @@ async function hydrateModuleItem(courseId, moduleName, item) {
       }
       const content = await canvasApiFetch(canvasConnection.baseUrl, canvasConnection.token, apiPath);
       if (content.locked_for_user) throw Error("Canvas has locked this content. Check release dates or ask your instructor for access.");
-      const text = stripHtml(content[field] || '');
+      const material = canvasHtmlMaterial(content[field] || '');
+      const text = material.text;
+      linkedFiles = material.links;
       result = { title: content.title || content.name || baseItem.title, text, readable: Boolean(text.trim()), sourceKind: baseItem.type.toLowerCase(), reason: 'Canvas returned an empty body. Check the published content or upload course material.' };
     }
-    const qualityProblem = result.readable ? studyTextProblem(result.text) : "";
-    const readable = Boolean(result.readable && !qualityProblem);
-    return { ...baseItem, title: baseItem.type === "ExternalUrl" ? baseItem.title : result.title || baseItem.title, summary: readable ? result.text : '',
-      readable, status: readable ? 'read' : 'blocked', sourceKind: result.sourceKind,
-      trace: result.trace || [],
-      reason: readable ? '' : qualityProblem || result.reason || 'No readable text found. Check access or upload an accessible copy.' };
+    const hydrated = sourceFromReading(baseItem, result);
+    hydrated.children = [];
+    for (const link of linkedFiles) {
+      if (context.isCurrent && !context.isCurrent()) break;
+      let child;
+      try { child = await readFile(link.id); }
+      catch (error) { child = {text:'',readable:false,reason:error.message || 'Linked file could not be read.'}; }
+      hydrated.children.push(sourceFromReading({id:`linked-file-${link.id}`,type:'File',contentId:link.id,title:link.title,moduleName,
+        parentId:baseItem.id,parentTitle:baseItem.title}, child));
+    }
+    return hydrated;
   } catch (error) {
     return { ...baseItem, summary: '', readable: false, status: 'blocked', reason: error.message || 'Reading failed. Check access in Canvas.' };
   }
@@ -1308,13 +1348,14 @@ async function generateModuleFlashcards(course, modules, moduleId) {
   if (module) await runAiTutor(course, module, 'flashcards');
 }
 
+let canvasReadingSession = 0;
 let moduleRequestVersion = 0;
 let currentModuleKey = "";
 function invalidateModuleRequests() { moduleRequestVersion++; currentModuleKey = ""; cancelAiGeneration(); }
 function moduleRequestCurrent(module) {
   return module.requestVersion === moduleRequestVersion && currentModuleKey === `${module.courseId}/${module.id}`;
 }
-async function hydrateSelectedModule(course, modules, moduleId, title) {
+async function hydrateSelectedModule(course, modules, moduleId, title, {force = false} = {}) {
   const module = modules.find(item => String(item.id) === String(moduleId));
   if (!module || (module.courseId && String(module.courseId) !== String(course.id))) return null;
   cancelAiGeneration();
@@ -1322,29 +1363,63 @@ async function hydrateSelectedModule(course, modules, moduleId, title) {
   currentModuleKey = `${course.id}/${module.id}`;
   module.courseId = course.id;
   module.requestVersion = version;
-  showResponse(title, `<p role="status">Reading the actual sources in ${escapeHtml(module.name)}…</p>`);
+  const session = canvasReadingSession;
+  if (force) { module.hydrated = false; module.generated = {}; }
+  if (!force && module.hydrated && module.readingSession === session) return module;
+  showResponse(title, `<p id="reading-progress" role="status">Reading the actual sources in ${escapeHtml(module.name)}…</p>`);
   try {
-    // Always refresh the selected module; do not reuse content from another selection/session.
     const rawItems = await fetchCanvasList(`/api/v1/courses/${course.id}/modules/${module.id}/items?include[]=content_details`);
-    const items = [];
-    for (const item of rawItems) {
-      if (version !== moduleRequestVersion) return null;
-      items.push(await hydrateModuleItem(course.id, module.name, item));
+    const isCurrent = () => version === moduleRequestVersion && session === canvasReadingSession;
+    if (!isCurrent()) return null;
+    const fileReads = new Map();
+    const context = {isCurrent, readFile:id => {
+      const key = String(id).replace(/^0+(?=\d)/,'');
+      if (!fileReads.has(key)) fileReads.set(key, canvasFileTextFetch(canvasConnection.baseUrl,canvasConnection.token,key));
+      return fileReads.get(key);
+    }};
+    const results = new Array(rawItems.length);
+    let next = 0, completed = 0;
+    const worker = async () => {
+      while (isCurrent() && next < rawItems.length) {
+        const index = next++;
+        results[index] = await hydrateModuleItem(course.id,module.name,rawItems[index],context);
+        if (!isCurrent()) return;
+        completed++;
+        const progress = responseBody.querySelector('#reading-progress');
+        if (progress) progress.textContent = `Reading ${completed} of ${rawItems.length}: ${results[index].title}`;
+      }
+    };
+    await Promise.all(Array.from({length:Math.min(4,rawItems.length)},worker));
+    if (!isCurrent()) return null;
+    const items = [], seenFiles = new Set();
+    const fileKey = item => String(item.contentId || '').replace(/^0+(?=\d)/,'');
+    const directFiles = new Set(results.filter(item => item.type === 'File' && item.contentId).map(fileKey));
+    const addFile = item => {
+      const key = fileKey(item);
+      if (!key) {items.push(item);return;}
+      if (seenFiles.has(key)) return;
+      seenFiles.add(key);items.push(item);
+    };
+    for (const item of results) {
+      if (item.type === 'File') addFile(item); else items.push(item);
+      for (const child of item.children || []) if (!directFiles.has(fileKey(child))) addFile(child);
     }
-    if (version !== moduleRequestVersion) return null;
     const uploads = module.items.filter(item => item.sourceKind === 'uploaded');
     module.items = [...items, ...uploads];
     module.hydrated = true;
+    module.readingSession = session;
+    module.readAt = Date.now();
+    if (force) module.generated = {};
     return module;
   } catch (error) {
     if (version === moduleRequestVersion) showResponse('Module could not be read', `<p role="alert">${escapeHtml(error.message)}</p>`);
     return null;
   }
 }
-function moduleCoverage(module) {
+function moduleCoverage(module, {allowReread = true} = {}) {
   const sources = module.items.filter(hasReadableStudyText);
   const documents = module.items.filter(item => item.type !== 'SubHeader');
-  return `<p class="coverage-summary">Based on ${sources.length} of ${documents.length} sources.${sources.length < documents.length ? ' Partial coverage: unreadable sources are excluded.' : ''}</p><details class="source-details"><summary>Sources and reading details</summary><p>AI uses excerpts of up to 12,000 characters per source and 45,000 total, shared across readable sources. Longer documents are not covered in full.</p>${sources.length ? `<ul>${sources.map(item => `<li>${escapeHtml(item.title)}</li>`).join('')}</ul>` : '<p>No readable material. No study content was generated.</p>'}${renderModuleSourceReport(module)}</details>`;
+  return `${allowReread ? '<button type="button" data-reread-module>Re-read module</button>' : ''}<p class="coverage-summary">Based on ${sources.length} of ${documents.length} sources.${sources.length < documents.length ? ' Partial coverage: unreadable sources are excluded.' : ''}</p><details class="source-details"><summary>Sources and reading details</summary><p>AI uses excerpts of up to 12,000 characters per source and 45,000 total, shared across readable sources. Longer documents are not covered in full.</p>${sources.length ? `<ul>${sources.map(item => `<li>${escapeHtml(item.title)}</li>`).join('')}</ul>` : '<p>No readable material. No study content was generated.</p>'}${renderModuleSourceReport(module)}</details>`;
 }
 
 function showUnreadableModule(course, module) {
@@ -1591,12 +1666,36 @@ function renderDownloadedFileImport(mode) {
   `;
 }
 
+function sourceReadingDetails(item) {
+  const reading = item.reading;
+  const parts = [`${reading?.characters ?? (item.summary || item.text || '').length} characters extracted`];
+  if (reading?.pagesRead !== undefined) parts.push(`${reading.pagesRead} of ${reading.totalPages} pages read`);
+  else if (reading?.slidesRead !== undefined) parts.push(`${reading.slidesRead} of ${reading.totalSlides ?? 'unknown'} slides read`);
+  else if (reading?.cellsRead !== undefined) parts.push(`${reading.cellsRead} of ${reading.totalCells} cells read`);
+  else if (reading?.filesRead !== undefined) parts.push(`${reading.filesRead} of ${reading.totalFiles} supported archive files attempted`);
+  else parts.push('Page/slide count not available for this source');
+  if (reading?.issues?.length) parts.push(`Unreadable entries: ${reading.issues.join('; ')}`);
+  if (reading?.truncated) parts.push(`Safety limit — partial extraction: ${(reading.limits || []).join('; ')}`);
+  else parts.push(reading && reading.coverageKnown !== false ? 'No extraction safety limit reached' : 'Extraction coverage unavailable');
+  return parts.join(' · ');
+}
 function renderModuleSourceReport(module) {
   if (!module.items.length) return '<p>No module items returned. Check that the module is published and accessible.</p>';
-  return module.items.map(item => `<div class="module-row"><strong>${escapeHtml(item.title)}</strong><span>${item.type === 'SubHeader' ? 'Heading (skipped)' : hasReadableStudyText(item) ? 'Read' : 'Blocked / empty'} · ${escapeHtml(item.type)}</span><p>${escapeHtml(hasReadableStudyText(item) ? `${item.summary.length} characters extracted` : item.reason || studyTextProblem(item.summary) || 'No readable content returned. Check access in Canvas or upload a copy.')}</p>${item.trace?.length ? `<p>Download trace: ${escapeHtml(item.trace.map(step => `${step.stage}: ${step.status || 'transport failed'}`).join(' → '))}</p>` : ''}</div>`).join('');
+  return module.items.map(item => `<div class="module-row"><strong>${escapeHtml(item.title)}</strong><span>${item.type === 'SubHeader' ? 'Heading (skipped)' : hasReadableStudyText(item) ? 'Read' : 'Blocked / empty'} · ${escapeHtml(item.type)}</span>
+    ${item.parentTitle ? `<p>Linked from: ${escapeHtml(item.parentTitle)}</p>` : ''}
+    <p>${escapeHtml(sourceReadingDetails(item))}</p>${!hasReadableStudyText(item) ? `<p>${escapeHtml(item.reason || studyTextProblem(item.summary) || 'No readable text returned.')}</p>` : ''}
+    ${item.archiveSources?.length ? `<details><summary>Files inside this archive</summary>${item.archiveSources.map(source => `<p><strong>${escapeHtml(source.title)}</strong>: ${escapeHtml(sourceReadingDetails(source))}${source.reason ? ' · '+escapeHtml(source.reason) : ''}</p>`).join('')}</details>` : ''}
+    ${item.trace?.length ? `<p>Download trace: ${escapeHtml(item.trace.map(step => `${step.stage}: ${step.status || 'transport failed'}`).join(' → '))}</p>` : ''}</div>`).join('');
 }
 
 function bindModuleNoteActions(course, module) {
+  responseBody.querySelectorAll('[data-reread-module]').forEach(button => button.addEventListener('click', async () => {
+    const fresh = await hydrateSelectedModule(course,[module],module.id,'Re-reading module',{force:true});
+    if (fresh && moduleRequestCurrent(fresh)) {
+      showResponse('Module sources refreshed', moduleCoverage(fresh) + renderDownloadedFileImport('study'));
+      bindModuleNoteActions(course,fresh);
+    }
+  }));
   bindAiOptions();
   bindAiPractice();
   const noteButton = responseBody.querySelector("#module-note-again");
@@ -2888,6 +2987,7 @@ async function importDownloadedModuleFile(course, module, file, mode) {
         ? payload.text
         : `${payload.contentType || file.type || "File"} · ${payload.reason || "The downloaded file could not be converted to study text."}`,
       readable: payload.readable,
+      reading: payload.reading, archiveSources: payload.sources || [],
       sourceKind: "uploaded",
       readDebug: "downloaded from your Canvas browser session",
     };
@@ -3104,7 +3204,7 @@ async function runAiTutor(course, module, mode) {
   const controller = new AbortController();
   activeAiGeneration = controller;
   const payload = {...buildAiTutorPayload(course, module, mode), ...options};
-  showResponse('Creating your practice', `<p id="generation-progress" role="status">Creating ${options.count} ${mode === 'mcq' ? 'quiz questions' : 'flashcards'}…</p><button id="cancel-generation" type="button">Cancel generation</button>` + moduleCoverage(module));
+  showResponse('Creating your practice', `<p id="generation-progress" role="status">Creating ${options.count} ${mode === 'mcq' ? 'quiz questions' : 'flashcards'}…</p><button id="cancel-generation" type="button">Cancel generation</button>` + moduleCoverage(module, {allowReread:false}));
   responseBody.querySelector('#cancel-generation')?.addEventListener('click', cancelAiGeneration);
   const started = Date.now();
   let progress = `Made 0 of ${options.count}.`;

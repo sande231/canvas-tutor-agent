@@ -461,3 +461,48 @@ Phase 1 regression tests use mocked Canvas and OpenAI responses, including the
 full 20-question module-to-quiz flow, smaller retries, top-ups, cancellation,
 partial results and configuration checks. They do not establish live model
 latency, account access or whether a particular module supports the chosen count.
+
+### Full source extraction and session cache (Phase 2)
+
+The reader retains full extracted text up to explicit safety limits. These are
+separate from the unchanged AI input budget (12,000 characters per source,
+45,000 total). PDFs inside ZIP archives use PDF.js, just like standalone PDFs.
+Plain text and code preserve their complete bodies, rather than a code summary.
+
+Canvas page, assignment and discussion headings appear as `Section: …` lines.
+Same-origin Canvas `/files/<id>` links become child sources and use the normal
+authenticated file-download route. Downloads are deduplicated by file ID within
+the selected module; linked files are not crawled recursively. Four workers read
+module items with progress updates. Extracted module content stays in memory for
+the authenticated session, so **Generate again** reuses it. **Re-read module**
+refreshes the Canvas material and clears old generated practice; reconnecting
+invalidates the extraction cache. Reloading the app also clears this cache.
+Saved study notes are independent and remain in localStorage.
+
+The source report shows extracted characters, page/slide counts when available,
+notebook cells or archive members, and any safety truncation. Archive details
+also show the individual file reports. No page count is invented for formats
+such as plain text or DOCX, whose pagination depends on rendering. Image-only or
+inaccessible material can still be unreadable; a successful download alone does
+not count as usable study material.
+
+All extraction limits are collected in `readerDefaults` near the top of
+`server.js`. Override any key using `READER_<KEY>` in the server environment or
+private `.env`, then restart. Values must be positive integers; invalid values
+use the defaults. No dependencies were added.
+
+| Reader setting | Default |
+| --- | ---: |
+| `READER_PDF_PAGES` | 2,000 pages |
+| `READER_PDF_CHARS`, `READER_OFFICE_CHARS` | 2,000,000 characters each |
+| `READER_NOTEBOOK_CELLS` | 20,000 cells |
+| `READER_NOTEBOOK_CHARS`, `READER_TEXT_CHARS`, `READER_CODE_CHARS` | 2,000,000 characters each |
+| `READER_HTML_CHARS`, `READER_OCR_CHARS`, `READER_LEGACY_PPT_CHARS` | 2,000,000 characters each |
+| `READER_ZIP_FILES` | 1,000 supported files |
+| `READER_ZIP_FILE_CHARS` | 2,000,000 characters per file |
+| `READER_ZIP_TOTAL_CHARS` | 10,000,000 characters |
+| `READER_ZIP_ENTRIES` | 10,000 archive entries inspected |
+| `READER_ZIP_ENTRY_BYTES` | 32,000,000 bytes per entry |
+| `READER_ZIP_TOTAL_BYTES` | 128,000,000 expanded bytes |
+
+Network-download limits and SSRF protections remain in `safe-reader.js`.

@@ -14,6 +14,32 @@ const { studyTextProblem } = require("./source-quality");
 const root = __dirname;
 loadEnvFile(path.join(root, ".env"));
 
+// Extraction safety limits only. AI prompt budgets are intentionally separate.
+const readerDefaults = {
+  PDF_PAGES: 2000, PDF_CHARS: 2_000_000, OFFICE_CHARS: 2_000_000,
+  NOTEBOOK_CELLS: 20000, NOTEBOOK_CHARS: 2_000_000, TEXT_CHARS: 2_000_000,
+  CODE_CHARS: 2_000_000, HTML_CHARS: 2_000_000, OCR_CHARS: 2_000_000,
+  LEGACY_PPT_CHARS: 2_000_000, ZIP_FILES: 1000, ZIP_FILE_CHARS: 2_000_000,
+  ZIP_TOTAL_CHARS: 10_000_000, ZIP_ENTRIES: 10000,
+  ZIP_ENTRY_BYTES: 32_000_000, ZIP_TOTAL_BYTES: 128_000_000,
+};
+function configuredReaderLimits(env = process.env) {
+  return Object.fromEntries(Object.entries(readerDefaults).map(([key, fallback]) => {
+    const value = Number(env[`READER_${key}`]);
+    return [key, Number.isSafeInteger(value) && value > 0 ? value : fallback];
+  }));
+}
+const readerLimits = configuredReaderLimits();
+function readingResult(result, limitKey, stats = {}, limits = []) {
+  const raw = String(result.text || '');
+  const limit = readerLimits[limitKey];
+  const reasons = [...limits];
+  if (raw.length > limit) reasons.push(`${limitKey}: retained ${limit} of ${raw.length} extracted characters`);
+  const text = raw.slice(0, limit);
+  return {...result, text, reading:{...stats, characters:text.length, truncated:reasons.length > 0, limits:reasons}};
+}
+
+
 const emailDisabled = process.env.EMAIL_DISABLED === "1" || process.env.EMAIL_DISABLED === "true";
 
 const port = Number(process.argv[2] || process.env.PORT || 4177);
@@ -234,7 +260,7 @@ async function extractedResource(title, contentType, buffer) {
     const cleaned = html.replace(/<(script|style|nav|footer)[\s\S]*?<\/\1>/gi, "");
     const text = stripHtml(cleaned.replace(/<h[1-6][^>]*>([\s\S]*?)<\/h[1-6]>/gi, " Section: $1. ")).replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">");
     const problem = studyTextProblem(text);
-    return { title, readable: !problem, text: problem ? "" : text.slice(0, 24000), sourceKind: "page", reason: problem };
+    return readingResult({ title, readable: !problem, text, sourceKind: "page", reason: problem }, "HTML_CHARS");
   }
   return processSourceDocument(title, contentType, buffer);
 }
@@ -1371,12 +1397,12 @@ async function processLegacyPpt(title, buffer, { converter, reader, run } = {}) 
     }
     if (textReader) {
       try {
-        const { stdout } = await execute(textReader, ['-d', 'utf-8', input], {timeout:20000,maxBuffer:1000000});
+        const { stdout } = await execute(textReader, ['-d', 'utf-8', input], {timeout:20000,maxBuffer:readerLimits.LEGACY_PPT_CHARS * 4});
         // Fallback stream order may include repeated text from saved revisions.
         // Label sections, not invented slide numbers, and deduplicate exact blocks.
         const blocks = [...new Set(stdout.split('\f').map(text => text.replace(/\r/g, '').replace(/[\x00-\x08\x0b\x0e-\x1f]/g, '').trim()).filter(Boolean))];
-        const text = blocks.map((block, index) => `Section ${index + 1}:\n${block}`).join('\n\n').slice(0,45000);
-        if (text && !studyTextProblem(text)) return {title,readable:true,text,sourceKind:'legacy-ppt',extractor:'catppt',reason:''};
+        const text = blocks.map((block, index) => `Section ${index + 1}:\n${block}`).join('\n\n');
+        if (text && !studyTextProblem(text)) return readingResult({title,readable:true,text,sourceKind:'legacy-ppt',extractor:'catppt',reason:''}, 'LEGACY_PPT_CHARS', {sectionsRead:blocks.length});
       } catch { if (!executable) reason = 'The legacy PowerPoint reader failed or timed out. Try an unlocked PPTX/PDF export or install LibreOffice.'; }
     }
     return {title,readable:false,text:'',sourceKind:'legacy-ppt',reason};
@@ -1393,133 +1419,80 @@ async function processSourceDocument(title, contentType, buffer) {
     const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
     task = pdfjs.getDocument({ data: new Uint8Array(buffer), useSystemFonts: true, isEvalSupported: false, verbosity: 0 });
     document = await task.promise;
-    const chunks = [];
-    for (let number = 1; number <= Math.min(document.numPages, 100); number++) {
+    const chunks = [], limits = [];
+    let pagesRead = 0, characters = 0;
+    for (let number = 1; number <= Math.min(document.numPages, readerLimits.PDF_PAGES); number++) {
       const page = await document.getPage(number);
       const content = await page.getTextContent();
       const text = content.items.map(item => item.str || '').join(' ').trim();
-      if (text) chunks.push(`Page ${number}:\n${text}`);
-      if (chunks.join('\n').length > 45000) break;
+      pagesRead++;
+      if (text) { const chunk = `Page ${number}:\n${text}`; chunks.push(chunk); characters += chunk.length + 2; }
+      page.cleanup();
+      if (characters > readerLimits.PDF_CHARS) break;
     }
-    const text = chunks.join('\n\n').slice(0, 45000);
-    return {title, text, readable: Boolean(text.trim()), contentType, sourceKind: 'pdf',
-      reason: text.trim() ? '' : 'PDF contains no extractable text. A scanned document needs OCR; upload a text-based copy.'};
+    if (pagesRead < document.numPages) limits.push(`PDF safety limit: read ${pagesRead} of ${document.numPages} pages`);
+    const text = chunks.join('\n\n');
+    return readingResult({title, text, readable: Boolean(text.trim()), contentType, sourceKind:'pdf', extractor:'pdfjs',
+      reason: text.trim() ? '' : 'PDF contains no extractable text. A scanned document needs OCR; upload a text-based copy.'},
+      'PDF_CHARS', {pagesRead,totalPages:document.numPages}, limits);
   } catch {
     return {title, text: '', readable: false, contentType, reason: 'PDF could not be parsed; it may be encrypted or damaged. Upload an unlocked, text-based copy.'};
   } finally { if (task) await task.destroy(); }
 }
 
-function processDownloadedFile(title, contentType, buffer) {
+async function processDownloadedFile(title, contentType, buffer) {
   if (isNotebookFile(title, contentType)) {
-    const notebookText = safelyExtractNotebookText(buffer.toString("utf8"));
-    return {
-      title,
-      text: notebookText.slice(0, 16000),
-      readable: Boolean(notebookText.trim()),
-      contentType,
-      sourceKind: "notebook",
-      reason: notebookText.trim() ? "" : "Notebook file could not be parsed as JSON.",
-    };
+    try {
+      const cells = JSON.parse(buffer.toString('utf8')).cells || [];
+      if (!Array.isArray(cells)) throw Error('Invalid cells');
+      const cellsRead = Math.min(cells.length, readerLimits.NOTEBOOK_CELLS);
+      const text = extractNotebookText(buffer.toString('utf8'));
+      return readingResult({title,text,readable:Boolean(text.trim()),contentType,sourceKind:'notebook',reason:text.trim() ? '' : 'Notebook has no readable cell content.'},
+        'NOTEBOOK_CHARS', {cellsRead,totalCells:cells.length}, cellsRead < cells.length ? [`NOTEBOOK_CELLS: read ${cellsRead} of ${cells.length} cells`] : []);
+    } catch { return {title,text:'',readable:false,reason:'Notebook file could not be parsed as JSON.'}; }
   }
-
-  if (isOfficeDocumentFile(title, contentType, buffer)) {
-    return processOfficeDocument(title, contentType, buffer);
-  }
-
-  if (isPdfFile(title, contentType, buffer)) {
-    const pdfText = extractPdfText(buffer) || extractTextWithMetadata(title, buffer);
-    return {
-      title,
-      text: pdfText.slice(0, 20000),
-      readable: Boolean(pdfText.trim()),
-      contentType,
-      sourceKind: "pdf",
-      reason: pdfText.trim()
-        ? ""
-        : ocrToolAvailable()
-          ? "PDF downloaded, but text extraction found no readable text. OCR is available for image files; scanned PDFs may need page image conversion."
-          : "PDF downloaded, but text extraction found no readable text. This is likely a scanned/image PDF and needs OCR tooling such as Tesseract plus PDF image conversion.",
-    };
-  }
-
+  if (isOfficeDocumentFile(title, contentType, buffer)) return processOfficeDocument(title, contentType, buffer);
   if (isImageFile(title, contentType)) {
-    const ocrText = extractImageTextWithOcr(title, buffer);
-    return {
-      title,
-      text: ocrText.slice(0, 16000),
-      readable: Boolean(ocrText.trim()),
-      contentType,
-      sourceKind: "ocr",
-      reason: ocrText.trim()
-        ? ""
-        : "Image downloaded, but OCR is not installed or could not read text from the image.",
-    };
+    const text = extractImageTextWithOcr(title, buffer);
+    return readingResult({title,text,readable:Boolean(text.trim()),contentType,sourceKind:'ocr',reason:text.trim() ? '' : 'Image OCR is unavailable or found no text.'}, 'OCR_CHARS');
   }
-
-  if (isZipFile(contentType, title, buffer)) {
-    return processZipFile(title, buffer);
+  if (isZipFile(contentType, title, buffer)) return processZipFile(title, buffer);
+  if (isReadableTextType(contentType, title) || isCodeFile(title)) {
+    const text = normalizeCodeOrText(title, buffer.toString('utf8'));
+    return readingResult({title,text,readable:Boolean(text.trim()),contentType,sourceKind:isCodeFile(title) ? 'code' : 'text',reason:text.trim() ? '' : 'No text was extracted from this source.'}, isCodeFile(title) ? 'CODE_CHARS' : 'TEXT_CHARS');
   }
-
-  if (isReadableTextType(contentType, title)) {
-    return {
-      title,
-      text: normalizeCodeOrText(title, buffer.toString("utf8")).slice(0, 16000),
-      readable: Boolean(normalizeCodeOrText(title, buffer.toString("utf8")).trim()),
-      reason: "No text was extracted from this source.",
-      contentType,
-      sourceKind: isCodeFile(title) ? "code" : "text",
-    };
-  }
-
-  return {
-    title,
-    text: "",
-    readable: false,
-    contentType,
-    reason: `This file is ${contentType || "not plain text"}. It may need OCR or a DOCX/slides parser to read its full body.`,
-  };
+  return {title,text:'',readable:false,contentType,reason:`Unsupported content (${contentType || 'unknown format'}). Upload a supported text-based document.`};
 }
 
-function processZipFile(title, buffer) {
-  const entries = extractZipEntries(buffer)
-    .filter((entry) => !entry.name.endsWith("/"))
-    .filter((entry) => isUsefulArchiveFile(entry.name))
-    .slice(0, 40);
-
-  const chunks = [];
-
-  for (const entry of entries) {
-    const extracted = extractArchiveEntryText(entry.name, entry.content);
-
-    if (!extracted.trim()) continue;
-    chunks.push(`FILE: ${entry.name}\n${extracted.slice(0, 3600)}`);
+async function processZipFile(title, buffer) {
+  const archive = extractZipEntries(buffer);
+  const entries = archive.filter(entry => !entry.name.endsWith('/') && isUsefulArchiveFile(entry.name));
+  const chunks = [], sources = [], limits = [...archive.limits];
+  let length = 0;
+  for (const entry of entries.slice(0, readerLimits.ZIP_FILES)) {
+    let result;
+    try {
+      result = entry.error ? {title:entry.name,text:'',readable:false,reason:entry.error} : await processSourceDocument(entry.name, '', entry.content);
+    } catch { result = {title:entry.name,text:'',readable:false,reason:'Archive document could not be parsed.'}; }
+    result = readingResult(result, 'ZIP_FILE_CHARS', result.reading, result.reading?.limits || []);
+    const header = `FILE: ${entry.name}\n`;
+    const available = Math.max(0, readerLimits.ZIP_TOTAL_CHARS - length - header.length - (chunks.length ? 7 : 0));
+    if (result.text.length > available) {
+      result.text = result.text.slice(0,available);
+      result.reading.characters = result.text.length;
+      result.reading.truncated = true;
+      result.reading.limits.push('ZIP_TOTAL_CHARS: archive text budget reached');
+    }
+    sources.push(result);
+    if (result.reading.truncated) limits.push(`${entry.name}: ${result.reading.limits.join('; ')}`);
+    if (result.text) { chunks.push(header + result.text); length += header.length + result.text.length + (chunks.length > 1 ? 7 : 0); }
+    if (available <= result.text.length) break;
   }
-
-  if (!chunks.length) {
-    return {
-      title,
-      text: "",
-      readable: false,
-      contentType: "application/zip",
-      reason: "Zip opened, but no readable coding/text/notebook/PDF/DOCX/PPTX files were found inside.",
-    };
-  }
-
-  return {
-    title,
-    text: chunks.join("\n\n---\n\n").slice(0, 30000),
-    readable: true,
-    contentType: "application/zip",
-    sourceKind: "zip",
-  };
-}
-
-function extractArchiveEntryText(name, content) {
-  if (isNotebookFile(name, "")) return safelyExtractNotebookText(content.toString("utf8"));
-  if (isOfficeDocumentFile(name, "", content)) return processOfficeDocument(name, "", content).text;
-  if (isPdfFile(name, "", content)) return extractPdfText(content);
-  if (isReadableTextType("", name)) return normalizeCodeOrText(name, content.toString("utf8"));
-  return "";
+  if (sources.length < entries.length) limits.push(`ZIP safety limit: read ${sources.length} of ${entries.length} supported files`);
+  const text = chunks.join('\n\n---\n\n');
+  return readingResult({title,text,readable:Boolean(text.trim()),contentType:'application/zip',sourceKind:'zip',sources,
+    reason:text.trim() ? '' : 'Zip opened, but no supported files yielded readable text.'},
+    'ZIP_TOTAL_CHARS', {filesRead:sources.length,totalFiles:entries.length,archiveEntries:archive.totalEntries}, limits);
 }
 
 function processOfficeDocument(title, contentType, buffer) {
@@ -1531,6 +1504,7 @@ function processOfficeDocument(title, contentType, buffer) {
     .sort((left, right) => left.name.localeCompare(right.name, undefined, { numeric: true }));
   const chunks = xmlEntries
     .map((entry, index) => {
+      if (entry.error) return '';
       const cleanXml = xml => xml.replace(/<p:sp\b[\s\S]*?<\/p:sp>/g, shape => /<p:ph[^>]*type="(?:sldNum|dt|ftr|hdr)"/.test(shape) ? '' : shape);
       let text = extractOfficeXmlText(isPptx ? cleanXml(entry.content.toString('utf8')) : entry.content.toString('utf8'));
       if (isPptx) {
@@ -1552,40 +1526,55 @@ function processOfficeDocument(title, contentType, buffer) {
     .filter(Boolean);
 
   const xmlText = chunks.join("\n\n");
-  const metadataText = xmlText.trim() ? "" : extractTextWithMetadata(title, buffer);
+  const metadataText = xmlText.trim() || entries.limits.length || entries.some(entry => entry.error) ? "" : extractTextWithMetadata(title, buffer);
   const text = xmlText || metadataText;
 
-  return {
+  return readingResult({
     title,
-    text: text.slice(0, 24000),
+    text,
     readable: Boolean(text.trim()),
     contentType,
     sourceKind: isPptx ? "slides" : "docx",
     reason: text.trim() ? "" : "Office file opened, but no readable document or slide text was found.",
-  };
+  }, "OFFICE_CHARS", {
+    ...(isPptx ? {slidesRead:xmlEntries.filter(entry => !entry.error).length,totalSlides:entries.limits.length ? null : xmlEntries.length} : {}),
+    issues:entries.filter(entry => entry.error).map(entry => `${entry.name}: ${entry.error}`),
+  }, entries.limits);
 }
 
 function extractZipEntries(buffer) {
   const entries = [];
+  entries.limits = [];
+  entries.totalEntries = 0;
   const end = buffer.lastIndexOf(Buffer.from([0x50,0x4b,0x05,0x06]));
-  if (end < 0 || end + 22 > buffer.length) return [];
+  if (end < 0 || end + 22 > buffer.length) return entries;
   let offset = buffer.readUInt32LE(end + 16), total = 0;
-  const count = Math.min(buffer.readUInt16LE(end + 10), 1000);
+  entries.totalEntries = buffer.readUInt16LE(end + 10);
+  const count = Math.min(entries.totalEntries, readerLimits.ZIP_ENTRIES);
+  if (count < entries.totalEntries) entries.limits.push(`ZIP_ENTRIES: inspected ${count} of ${entries.totalEntries} archive entries`);
   for (let i = 0; i < count; i++) {
-    if (offset + 46 > buffer.length || buffer.readUInt32LE(offset) !== 0x02014b50) break;
+    if (offset + 46 > buffer.length || buffer.readUInt32LE(offset) !== 0x02014b50) { entries.limits.push('Archive directory ended early; remaining entries were not inspected'); break; }
     const flags = buffer.readUInt16LE(offset + 8), compression = buffer.readUInt16LE(offset + 10);
     const size = buffer.readUInt32LE(offset + 20), nameLength = buffer.readUInt16LE(offset + 28);
     const local = buffer.readUInt32LE(offset + 42);
     const name = buffer.subarray(offset + 46, offset + 46 + nameLength).toString('utf8');
     offset += 46 + nameLength + buffer.readUInt16LE(offset + 30) + buffer.readUInt16LE(offset + 32);
-    if (flags & 1 || local + 30 > buffer.length) continue;
+    if (flags & 1 || local + 30 > buffer.length) { entries.push({name,content:Buffer.alloc(0),error:'Encrypted or damaged archive entry'}); continue; }
     const start = local + 30 + buffer.readUInt16LE(local + 26) + buffer.readUInt16LE(local + 28);
-    if (start + size > buffer.length) continue;
+    if (start + size > buffer.length) { entries.push({name,content:Buffer.alloc(0),error:'Damaged archive entry'}); continue; }
     const data = buffer.subarray(start, start + size);
-    const content = compression === 0 ? data : compression === 8 ? zlib.inflateRawSync(data, {maxOutputLength: 20_000_000}) : Buffer.alloc(0);
+    let content;
+    try {
+      if (size > readerLimits.ZIP_ENTRY_BYTES) throw Error('ZIP_ENTRY_BYTES limit');
+      if (![0,8].includes(compression)) { entries.push({name,content:Buffer.alloc(0),error:'Unsupported ZIP compression'}); continue; }
+      content = compression === 0 ? data : zlib.inflateRawSync(data, {maxOutputLength:readerLimits.ZIP_ENTRY_BYTES});
+    } catch {
+      entries.limits.push(`${name}: ZIP_ENTRY_BYTES limit or damaged compressed entry`);
+      entries.push({name,content:Buffer.alloc(0),error:'Archive entry exceeded its safety limit or could not be decompressed.'}); continue;
+    }
     total += content.length;
-    if (total > 40_000_000) throw Error('Archive expands beyond the reading limit. Upload a smaller document.');
-    if (content.length) entries.push({name, content});
+    if (total > readerLimits.ZIP_TOTAL_BYTES) { entries.limits.push('ZIP_TOTAL_BYTES: archive expansion stopped'); break; }
+    entries.push({name, content});
   }
   return entries;
 }
@@ -1595,18 +1584,16 @@ function extractNotebookText(rawJson) {
   const cells = Array.isArray(notebook.cells) ? notebook.cells : [];
   const chunks = [];
 
-  cells.slice(0, 80).forEach((cell, index) => {
+  cells.slice(0, readerLimits.NOTEBOOK_CELLS).forEach((cell, index) => {
     const source = Array.isArray(cell.source) ? cell.source.join("") : String(cell.source || "");
     if (!source.trim()) return;
 
     if (cell.cell_type === "markdown") {
-      chunks.push(`Markdown cell ${index + 1}:\n${stripHtml(source)}`);
+      chunks.push(`Markdown cell ${index + 1}:\n${source}`);
       return;
     }
 
-    if (cell.cell_type === "code") {
-      chunks.push(`Code cell ${index + 1}:\n${source}`);
-    }
+    chunks.push(`${cell.cell_type === "code" ? "Code" : "Raw"} cell ${index + 1}:\n${source}`);
   });
 
   return chunks.join("\n\n");
@@ -1826,22 +1813,8 @@ function decodePdfHex(value) {
 }
 
 function normalizeCodeOrText(title, rawText) {
-  if (isCodeFile(title)) {
-    const lines = rawText.split(/\r?\n/);
-    const imports = lines.filter((line) => /^(import|from|const|let|var|#include|using)\b/.test(line.trim())).slice(0, 20);
-    const definitions = lines
-      .filter((line) => /\b(function|def|class|interface|public|private|protected)\b/.test(line.trim()))
-      .slice(0, 30);
-    return [
-      imports.length ? `Imports and setup:\n${imports.join("\n")}` : "",
-      definitions.length ? `Important definitions:\n${definitions.join("\n")}` : "",
-      `Code excerpt:\n${rawText.slice(0, 6000)}`,
-    ]
-      .filter(Boolean)
-      .join("\n\n");
-  }
-
-  return stripHtml(rawText);
+  // Preserve code, markdown and plain text verbatim, including their last lines.
+  return /\.html?$/i.test(title) ? stripHtml(rawText) : rawText;
 }
 
 function isReadableTextType(contentType, title) {
@@ -1936,6 +1909,7 @@ function isUsefulArchiveFile(name) {
     ".pdf",
     ".docx",
     ".pptx",
+    ".ppt",
     ".png",
     ".jpg",
     ".jpeg",
@@ -1987,5 +1961,5 @@ module.exports = {
   deliveryNote,
   readDigestConfig,
   processSourceDocument, extractedResource, validateGroundedResult, parseAiTutorJson,
-  server, aiStatus, normalizeAiOptions, aiOutputBudget, proxyAiTutor, downloadCanvasFile, readExternalSource, processLegacyPpt, requestAiResponse,
+  readerLimits, configuredReaderLimits, server, aiStatus, normalizeAiOptions, aiOutputBudget, proxyAiTutor, downloadCanvasFile, readExternalSource, processLegacyPpt, requestAiResponse,
 };
