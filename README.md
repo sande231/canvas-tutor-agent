@@ -476,8 +476,8 @@ authenticated file-download route. Downloads are deduplicated by file ID within
 the selected module; linked files are not crawled recursively. Four workers read
 module items with progress updates. Extracted module content stays in memory for
 the authenticated session, so **Generate again** reuses it. **Re-read module**
-refreshes the Canvas material and clears old generated practice; reconnecting
-invalidates the extraction cache. Reloading the app also clears this cache.
+refreshes the Canvas material and clears session-generated practice; Phase 4 saved
+sets remain reviewable until replaced. Reconnecting invalidates the extraction cache. Reloading the app also clears this cache.
 Saved study notes are independent and remain in localStorage.
 
 The source report shows extracted characters, page/slide counts when available,
@@ -560,3 +560,84 @@ sampled passage coverage, partial failures and retries, cancellation and stale
 results, source weighting, multi-passage concept evidence, and a question citing
 an important fact found only at the end of the final source. Live model quality,
 latency and account access still need a live Canvas/OpenAI check.
+
+### Practice modes and saved progress (Phase 4)
+
+The practice options include question types and flashcard styles as well as count
+and difficulty. Quiz types are multiple choice, multi-select, true/false with an
+explanation, fill in the blank, short answer, code output, find the bug, scenario,
+matching, and ordering. Card styles are term/definition, why/how, cloze, comparison,
+example/concept, and code/meaning. Code options appear once the selected module's
+readable sources contain code or notebooks. Preferences are stored separately from
+credentials. Generation still indexes the full module, respects Cancel, uses
+batches of at most ten, and validates every concept and source reference.
+
+`practice-core.js` supplies the browser and Node with the same type contracts.
+Each generated card/question includes `type`, `difficulty`, `conceptId` and its
+source citation. Type-specific fields include `answers` for multi-select,
+`acceptedAnswers` for blanks, `pairs` for matching, `steps` in correct order for
+ordering, and `code` for code questions/cards. New Responses requests use strict
+schema variants (`anyOf` within the item array), with the existing JSON fallback.
+Old untyped four-choice/card results migrate to multiple-choice/why-how and medium
+difficulty; explicitly unknown types or invalid difficulties are rejected.
+`validateGroundedResult` is unchanged: the server resolves passage IDs and attaches
+the original evidence. Quality instructions require plausible distractors, a
+clear answer, varied cognitive levels, no catch-all choices, and explanations of
+the answer and the strongest distractor or likely misconception.
+
+**Quiz review:** choose one question at a time or all on one page, optionally set
+a timer, and finish for a score. Choices are shuffled per attempt and their order
+survives reload. Missed answers show the correct solution, explanation and source.
+“Retry only missed” starts a smaller attempt without deleting the original quiz;
+“Retry full set” returns to it. Unanswered questions count as missed. Multi-select,
+matching and ordering use all-or-nothing scoring. Blanks accept the model's listed
+alternatives, ignoring case and repeated whitespace.
+
+Short answers call `POST /api/ai-grade`, using the question's original stable
+passage ID and full cited passage. The server validates that evidence before asking
+the configured model for correctness and feedback. Source content and student
+answers are untrusted data. AI grading is a study aid, not an instructor's grade.
+Failures or cancellation leave an answer pending, show a provisional score, and
+allow retry; pending grades never count as recorded mistakes. Navigation discards
+late grading results. This endpoint has bounded timeouts, one transient-error
+retry and structured-output fallback, and keeps the OpenAI key on the server.
+
+**Flashcard review:** click the card or press Space to flip. After revealing the
+answer, 1 means “Still learning” and 2 means “Know it”. Misses return in the same
+review and reset to box 1. Successful reviews move through five Leitner boxes with
+1, 3, 7, 14 and 30-day intervals. The due-today count includes new cards; “Review all
+cards” is available for extra practice. CSV export contains front, back and source
+(including code where relevant), with quoted multiline fields and spreadsheet
+formula protection. Map Front/Back when importing into Anki or Quizlet.
+
+**Weak spots and exams:** completed results update correct/missed totals by
+`conceptId`, scoped to the course and module. A concept is weak when its last
+response was wrong or misses exceed successes. Course Overview lists weak concepts;
+“Practise my weak spots” reuses their saved items. New generation gives weak
+concepts priority within each source while preserving Phase 3's source allocation.
+Exam mode on Quizzes combines saved quizzes from two or more selected modules,
+removes repeated concept/type pairs, and attributes outcomes to their original
+modules. Generate those module quizzes first; building an exam makes no AI call.
+
+**Saving:** latest generated sets per tool, quiz responses/timer/progress, Leitner
+boxes, and concept results are stored under
+`canvasTutor.practice.v1.<courseId>.<moduleId>`. `normalizeSaved` uses explicit
+allowlists rather than serializing connection, module or API response objects.
+No Canvas token or OpenAI key is stored. Corrupt data is ignored safely. If browser
+storage is blocked or full, practice continues in memory with a visible warning.
+Saved practice is accessible from the sidebar and connection screen without a
+Canvas login. Refresh clears Canvas authentication and the full extraction/index
+cache, but saved sets and progress remain. Re-reading a module invalidates its
+session index; previously saved practice remains available until replaced by a
+new set. Local browser storage is not a cross-device backup.
+
+Phase 4 tests mock network/API calls. They cover every type (valid and malformed),
+20-item generation, all ten rendered question inputs, scoring/retries, scheduling,
+keyboard flips, CSV, reload recovery, credential exclusion, blocked storage,
+short-answer feedback/failures/cancellation/stale responses, weak priorities,
+exam attribution, timers and static script delivery. Earlier UI tests were updated
+intentionally to assert the new flip-card and scored-quiz behavior instead of
+`<details>` cards and per-question answer buttons. Live Canvas access, real model
+quality across each type, AI grading accuracy and visual browser QA still require
+live verification. No dependencies, email/digest behavior or Phase 5 features were
+added.

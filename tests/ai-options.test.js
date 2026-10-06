@@ -66,7 +66,7 @@ function browser(fetchImpl,count=20) {
   if(url==='/api/ai-index')return {ok:true,json:async()=>({concepts:fixtureConcepts(JSON.parse(options.body).passages)})};
   return fetchImpl(url,options);
  };
- dom.window.eval(['source-quality.js','source-index.js','app.js'].map(name=>fs.readFileSync(path.join(root,name),'utf8')).join('\n'));
+ dom.window.eval(['source-quality.js','source-index.js','practice-core.js','app.js','practice-ui.js'].map(name=>fs.readFileSync(path.join(root,name),'utf8')).join('\n'));
  return dom;
 }
 function grounded(start,count,mode='mcq') {
@@ -165,13 +165,15 @@ test('20-question full module flow batches, validates real passages and renders 
    await w.runAiTutor({id:1,name:'Statistics course'},module,'mcq');
    assert.equal(requests.length,2);assert.ok(requests.every(body=>body.count===10&&body.difficulty==='hard'));
    assert.equal(requests[1].previousQuestions.length,10);
-   assert.equal(w.document.querySelectorAll('[data-ai-question]').length,20);
+   w.document.querySelector('[data-layout]').value='all';w.document.querySelector('[data-start-quiz]').click();
+   assert.equal(w.document.querySelectorAll('[data-practice-question]').length,20);
    assert.match(w.document.querySelector('#response-body').textContent,/Made 20 of 20/);
    const questions=module.generated.mcq.result.mcq;
    assert.equal(new Set(questions.map(q=>q.question)).size,20);
    for(const [i,q] of questions.entries()){assert.match(q.section,new RegExp(`Slide ${i+1}$`));assert.ok(q.evidence.includes(concepts[i][1]));}
-   w.document.querySelector('.quiz-choice input').click();w.document.querySelector('[data-check-ai-answer]').click();
-   assert.equal(w.document.querySelector('[data-ai-feedback]').textContent,'Correct.');
+   w.document.querySelectorAll('[data-practice-question]').forEach((field,i)=>[...field.querySelectorAll('input')].find(el=>el.value===questions[i].answer).click());
+   w.document.querySelector('[data-finish]').click();await new Promise(resolve=>setTimeout(resolve,0));
+   assert.match(w.document.querySelector('[data-score]').textContent,/20 \/ 20 \(100%\)/);
   } finally {dom.window.close();}
  });
  assert.equal(providerCalls,2);
@@ -208,7 +210,9 @@ test('top-up supplies missing cards and failed later batch keeps previous valid 
    assert.equal(calls,fail?2:3);assert.equal(result.flashcards.length,fail?8:20);
    assert.equal(result.shortfall,fail);
    if(fail){assert.match(result.warnings.join(' '),/max_output_tokens/);assert.doesNotMatch(result.notice,/sources did not support/i);}
-   assert.equal((dom.window.renderAiTutorResult({name:'Course'},{name:'Module'},result,'flashcards').match(/class="flashcard"/g)||[]).length,fail?8:20);
+   dom.window.showResponse('Practice',dom.window.renderAiTutorResult({id:1,name:'Course'},{id:2,name:'Module'},result,'flashcards'));dom.window.bindAiPractice();
+   assert.match(dom.window.document.querySelector('.practice-session').textContent,new RegExp(`${fail?8:20} due today`));
+   assert.ok(dom.window.document.querySelector('[data-flip]'));
   } finally {dom.window.close();}
  }
 });
@@ -230,7 +234,7 @@ test('Cancel keeps completed batches and prevents additional calls or late resul
  } finally {dom.window.close();}
 });
 
-test('options persist only count/difficulty, custom input validates, missing AI configuration blocks retrieval',async()=>{
+test('options persist only study preferences, custom input validates, missing AI configuration blocks retrieval',async()=>{
  const dom=browser(async()=>{throw Error('No Canvas or AI POST expected');});
  try {
   const w=dom.window;
@@ -239,7 +243,7 @@ test('options persist only count/difficulty, custom input validates, missing AI 
   const custom=w.document.querySelector('[data-ai-custom]');custom.value='51';assert.equal(w.selectedAiOptions(),null);
   custom.value='23';custom.dispatchEvent(new w.Event('change',{bubbles:true}));
   const difficulty=w.document.querySelector('[data-ai-difficulty]');difficulty.value='easy';difficulty.dispatchEvent(new w.Event('change',{bubbles:true}));
-  assert.deepEqual(JSON.parse(w.localStorage.getItem('canvas-tutor-ai-options-v1')),{count:23,difficulty:'easy'});
+  assert.deepEqual(JSON.parse(w.localStorage.getItem('canvas-tutor-ai-options-v1')),{count:23,difficulty:'easy',questionTypes:['multiple_choice'],cardTypes:['why_how']});
   w.showResponse('Restored',w.renderAiOptions());assert.equal(w.document.querySelector('[data-ai-custom]').value,'23');
   w.localStorage.setItem('canvas-tutor-ai-options-v1','invalid JSON');assert.equal(w.readAiOptions().count,5);
   w.fetch=async url=>{assert.equal(url,'/api/ai-status');return {ok:true,json:async()=>({configured:false,model:'fixture'})};};

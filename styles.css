@@ -1050,3 +1050,21 @@ blockquote { margin: 16px 0; padding-left: 14px; border-left: 3px solid var(--li
 .ai-options label[hidden] { display: none; }
 .ai-options select, .ai-options input { font: inherit; padding: .65rem; border: 1px solid #bccbc3; border-radius: .35rem; background: white; color: inherit; width: 100%; }
 .ai-options p { flex-basis: 100%; margin: 0; }
+
+/* Phase 4: focused review and keyboard-accessible practice. */
+.type-options { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: .5rem; width: 100%; }
+.type-options legend { font-weight: 650; }
+.type-options .quiz-choice { margin: 0; font-size: .9rem; }
+.practice-session { padding: 1rem 0; }
+.practice-session label { display: block; margin: .6rem 0; }
+.practice-session select, .practice-session textarea, .practice-session input:not([type=checkbox]):not([type=radio]) { max-width: 100%; width: 100%; padding: .65rem; border: 1px solid #cbd8d2; border-radius: .4rem; }
+.practice-session input[type=radio], .practice-session input[type=checkbox], .type-options input { width: auto; }
+.practice-session pre, .review-card code { white-space: pre-wrap; overflow-wrap: anywhere; text-align: left; }
+.review-card { width: 100%; min-height: 220px; padding: 2rem; display: flex; flex-direction: column; justify-content: center; gap: 1rem; font-size: 1.15rem; background: #f4f9f6; color: #173f30; border: 1px solid #b3cbbf; border-radius: .8rem; box-shadow: 0 3px 12px #143e2910; }
+.review-card.is-flipped { background: #e2f0e8; }
+.practice-actions { display: flex; flex-wrap: wrap; gap: .6rem; margin: 1rem 0; }
+.practice-session button:not(.review-card), .exam-picker button, .weak-spots button { padding: .6rem .85rem; margin: .3rem .3rem .3rem 0; border: 1px solid #b7cdc1; border-radius: .4rem; }
+.mistake-card, .exam-picker, .weak-spots { border-top: 1px solid #d9e3de; margin-top: 1.5rem; padding-top: 1rem; }
+.practice-session button:focus-visible, .practice-session input:focus-visible, .practice-session select:focus-visible, .practice-session textarea:focus-visible { outline: 3px solid #258563; outline-offset: 3px; }
+.practice-session [hidden], .type-options [hidden] { display: none !important; }
+@media (max-width: 600px) { .type-options { grid-template-columns: 1fr; } .review-card { padding: 1.25rem; } }

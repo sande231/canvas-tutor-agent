@@ -9,7 +9,7 @@ function app(handler) {
   const dom = new JSDOM(fs.readFileSync(path.join(root,'index.html'),'utf8'), {url:'http://127.0.0.1:4177',runScripts:'outside-only'});
   dom.window.localStorage.setItem('canvas-tutor-ai-options-v1',JSON.stringify({count:1,difficulty:'mixed'}));
   dom.window.fetch = async (url, options) => ({ok:true,status:200,json:async()=>url === '/api/ai-status' ? {configured:true,model:'fixture'} : fixtureIndexedResponse(url, JSON.parse(options?.body || '{}'),handler)});
-  dom.window.eval(fs.readFileSync(path.join(root,'source-quality.js'),'utf8') + '\n' + fs.readFileSync(path.join(root,'source-index.js'),'utf8') + '\n' + fs.readFileSync(path.join(root,'app.js'),'utf8'));
+  dom.window.eval(fs.readFileSync(path.join(root,'source-quality.js'),'utf8') + '\n' + fs.readFileSync(path.join(root,'source-index.js'),'utf8') + '\n' + fs.readFileSync(path.join(root,'practice-core.js'),'utf8') + '\n' + fs.readFileSync(path.join(root,'app.js'),'utf8') + '\n' + fs.readFileSync(path.join(root,'practice-ui.js'),'utf8'));
   return dom;
 }
 const content = 'Behavioral ethics examines how people actually make moral decisions, including the influence of bias.';
@@ -128,8 +128,8 @@ test('stalled generation leaves loading with Retry; the retry renders cards succ
   assert.match(w.document.querySelector('#response-body [role="alert"]').textContent,/timed out/);
   hang=false;
   w.document.querySelector('[data-ai-tutor-mode]').click();
-  for(let i=0;i<50&&!w.document.querySelector('details.flashcard');i++)await new Promise(resolve=>setTimeout(resolve,5));
-  assert.ok(w.document.querySelector('details.flashcard'));
+  for(let i=0;i<50&&!w.document.querySelector('[data-flip]');i++)await new Promise(resolve=>setTimeout(resolve,5));
+  assert.ok(w.document.querySelector('[data-flip]'));
  }finally{dom.window.close();}
 });
 test('canceling active generation exits loading and ignores late provider output',async()=>{

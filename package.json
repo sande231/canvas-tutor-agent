@@ -8,7 +8,7 @@
     "preview": "EMAIL_DISABLED=1 HOST=127.0.0.1 node server.js",
     "setup:ppt": "node scripts/setup-ppt.js",
     "test": "node --test tests/*.test.js",
-    "check": "node --check server.js && node --check app.js && node --check ui.js && node --check safe-reader.js && node --check source-quality.js && node --check source-index.js && node --check scripts/send-digest-once.js",
+    "check": "node --check server.js && node --check app.js && node --check ui.js && node --check safe-reader.js && node --check source-quality.js && node --check source-index.js && node --check practice-core.js && node --check practice-ui.js && node --check scripts/send-digest-once.js",
     "send-digest": "node scripts/send-digest-once.js"
   },
   "engines": {

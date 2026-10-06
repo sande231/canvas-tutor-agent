@@ -14,7 +14,7 @@ const brand = document.querySelector('.brand');
 oldSidebar.replaceChildren(brand);
 oldSidebar.insertAdjacentHTML('beforeend', `<nav aria-label="Main navigation">
   <a href="#dashboard">Dashboard</a><a href="#planner">Study Planner</a><a href="#goals">Goals</a>
-  <a href="#resources">Resources</a><a href="#board">Study Board</a><a href="#focus">Focus Sprint</a>
+  <a href="#resources">Resources</a><a href="#practice">Saved practice</a><a href="#board">Study Board</a><a href="#focus">Focus Sprint</a>
   <a href="#tools">Tutor Tools</a><a href="#settings">Settings</a>
 </nav><p class="sidebar-foot">A little focus. A lot of progress.</p>`);
 const main = document.createElement('section');
@@ -80,12 +80,14 @@ function bindWorkspace(context) {
 async function renderCourseTab(context, tab) {
   const { course, assignments, modules, postedNotes } = context;
   activeCourseContext = context;
+  modules.forEach(module=>restoreGeneratedPractice(course,module));
   const focusNote = makeCourseFocusNote(course, assignments);
   if (!notes.some(note => note.id === focusNote.id)) notes.push(focusNote);
   selectedId = focusNote.id;
   render();
   if (tab === 'overview') {
-    showResponse('Course overview', renderLearningDashboard(course, assignments, modules, postedNotes, estimateCourseScore(assignments), readCourseGoal(course.id)));
+    showResponse('Course overview', renderLearningDashboard(course, assignments, modules, postedNotes, estimateCourseScore(assignments), readCourseGoal(course.id)) + courseWeakSpots(course,modules));
+    bindCourseWeakSpots(course,modules);
   } else if (['notes', 'study-plan', 'goals', 'resources'].includes(tab)) {
     const markup = tab === 'notes' ? renderCourseNoteOrganizer(course, modules)
       : tab === 'study-plan' ? renderSmartStudyPlanner(course, assignments, modules)
@@ -99,9 +101,10 @@ async function renderCourseTab(context, tab) {
     const saved = practiceMode && !context.chooseModule ? modules.filter(module => module.generated?.[practiceMode]).sort((a,b) => b.generated[practiceMode].at - a.generated[practiceMode].at)[0] : null;
     context.chooseModule = false;
     if (saved) {
-      showResponse('AI Tutor', moduleCoverage(saved) + renderModuleIndex(saved.index) + renderAiTutorResult(course, saved, saved.generated[practiceMode].result, practiceMode) + '<button id="choose-study-module" type="button">Choose another module</button>');
+      showResponse('AI Tutor', moduleCoverage(saved) + renderModuleIndex(saved.index) + renderAiTutorResult(course, saved, saved.generated[practiceMode].result, practiceMode) + (practiceMode==='mcq'?renderExamPicker(course,modules):'') + '<button id="choose-study-module" type="button">Choose another module</button>');
       bindModuleNoteActions(course, saved);
       bindModuleIndex(course, saved, practiceMode);
+      bindExamPicker(course,modules);
       responseBody.querySelector('#choose-study-module').onclick = () => { context.chooseModule = true; renderCourseTab(context, tab); };
       return;
     }
@@ -109,6 +112,7 @@ async function renderCourseTab(context, tab) {
     const action = tab === 'ai-tutor' ? 'Open study material & AI tools' : tab === 'modules' ? 'Study module' : `Create ${tab}`;
     showResponse(tab === 'ai-tutor' ? 'AI Tutor' : tab[0].toUpperCase() + tab.slice(1), `<p>${tab === 'ai-tutor' ? 'Choose a module, then use AI Study Guide or upload downloaded materials. AI requires a configured server key.' : 'Choose course material to begin.'}</p>${renderAiOptions()}${renderAiStatus()}<div class="map">${modules.map(module => `<div class="module-row"><strong>${escapeHtml(module.name)}</strong><span>${module.hydrated ? module.items.length : module.itemCount || ""} ${module.hydrated ? "sources scanned" : "items · read when selected"}</span><button type="button" ${attr}="${module.id}">${action}</button></div>`).join('') || '<p>No modules returned for this course. Use Notes to write your own study material.</p>'}</div>`);
   }
+  if(tab==='quizzes'){responseBody.insertAdjacentHTML('beforeend',renderExamPicker(course,modules));bindExamPicker(course,modules);}
   bindWorkspace(context);
 }
 async function renderRoute() {
@@ -116,7 +120,7 @@ async function renderRoute() {
   invalidateModuleRequests();
   const parts = location.hash.slice(1).split('/');
   let view = parts[0] || (canvasConnection.profile ? 'dashboard' : 'connect');
-  if (!canvasConnection.profile && !['connect', 'settings', 'board', 'tools', 'focus'].includes(view)) view = 'connect';
+  if (!canvasConnection.profile && !['connect', 'settings', 'board', 'tools', 'focus', 'practice'].includes(view)) view = 'connect';
   [connectionPanel, mailPanel, toolPanel, selectedPanel, boardPanel].forEach(panel => { panel.hidden = true; viewPanels.append(panel); });
   responseDrawer.open = false;
   responseDrawer.hidden = false;
@@ -126,11 +130,12 @@ async function renderRoute() {
   document.querySelectorAll('nav a').forEach(link => {
     if (link.getAttribute('href') === `#${view}`) link.setAttribute('aria-current', 'page'); else link.removeAttribute('aria-current');
   });
+  if(view==='practice'){viewHeading('Saved practice','Review saved sets and progress on this browser.');showSavedPractice();return;}
   if (view === 'connect' || view === 'settings') {
     viewHeading(view === 'connect' ? 'Your next chapter starts here.' : 'Settings', view === 'connect' ? 'Connect Canvas to bring your courses and study tools into one calm space.' : 'Manage your Canvas connection and mail preferences.');
     connectionPanel.hidden = false;
     if (view === 'connect') {
-      viewContent.insertAdjacentHTML('beforeend', '<a class="text-link" href="#board">Continue to saved study board →</a>');
+      viewContent.insertAdjacentHTML('beforeend', '<a class="text-link" href="#board">Continue to saved study board →</a> · <a class="text-link" href="#practice">Saved practice →</a>');
       responseDrawer.hidden = true;
     } else {
       viewContent.insertAdjacentHTML('beforeend', '<section class="panel"><h2>AI configuration</h2>' + renderAiStatus() + '</section>');

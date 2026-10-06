@@ -1697,7 +1697,7 @@ function bindModuleNoteActions(course, module) {
       bindModuleNoteActions(course,fresh);
     }
   }));
-  bindAiOptions();
+  bindAiOptions(responseBody,module);
   bindAiPractice();
   const noteButton = responseBody.querySelector("#module-note-again");
   const quizButton = responseBody.querySelector("#module-quiz-from-notes");
@@ -3052,19 +3052,25 @@ function readAiOptions() {
   try { saved = JSON.parse(localStorage.getItem(aiOptionsKey) || '{}'); } catch { saved = {}; }
   const count = Number(saved?.count);
   return {count: Number.isFinite(count) && count >= 1 ? Math.min(50, Math.floor(count)) : 5,
-    difficulty: ['easy','medium','hard','mixed'].includes(saved?.difficulty) ? saved.difficulty : 'mixed'};
+    difficulty: ['easy','medium','hard','mixed'].includes(saved?.difficulty) ? saved.difficulty : 'mixed',
+    questionTypes:PracticeCore.selectedTypes(saved?.questionTypes,false,true),cardTypes:PracticeCore.selectedTypes(saved?.cardTypes,true,true)};
 }
 function renderAiOptions() {
-  const {count,difficulty} = readAiOptions();
+  const {count,difficulty,questionTypes,cardTypes} = readAiOptions();
   const presets = [5,10,15,20,30], custom = !presets.includes(count);
   return `<fieldset class="ai-options"><legend>Practice options</legend>
     <label>Number of cards or questions <select data-ai-count>${presets.map(n => `<option value="${n}" ${n === count ? 'selected' : ''}>${n}</option>`).join('')}<option value="custom" ${custom ? 'selected' : ''}>Custom (1–50)</option></select></label>
     <label data-ai-custom-label ${custom ? '' : 'hidden'}>Custom count <input data-ai-custom type="number" min="1" max="50" step="1" value="${count}" required></label>
     <label>Difficulty <select data-ai-difficulty>${['easy','medium','hard','mixed'].map(level => `<option value="${level}" ${level === difficulty ? 'selected' : ''}>${level[0].toUpperCase()+level.slice(1)}</option>`).join('')}</select></label>
+    <fieldset class="type-options"><legend>Question types (choose any mix)</legend>${Object.entries(PracticeCore.questionTypes).map(([key,label])=>`<label class="quiz-choice" ${PracticeCore.codeTypes.includes(key)?'data-code-option hidden':''}><input type="checkbox" data-question-type value="${key}" ${questionTypes.includes(key)?'checked':''}> ${label}</label>`).join('')}</fieldset>
+    <fieldset class="type-options"><legend>Flashcard styles (choose any mix)</legend>${Object.entries(PracticeCore.cardTypes).map(([key,label])=>`<label class="quiz-choice" ${PracticeCore.codeTypes.includes(key)?'data-code-option hidden':''}><input type="checkbox" data-card-type value="${key}" ${cardTypes.includes(key)?'checked':''}> ${label}</label>`).join('')}</fieldset>
+    <p>Code types appear after readable code or notebooks are loaded.</p><p data-type-error role="alert"></p>
     <p>Up to 10 items per call. Larger sets are generated in batches; you can cancel and keep completed items.</p></fieldset>`;
 }
-function bindAiOptions(root = responseBody) {
+function bindAiOptions(root = responseBody, module) {
   root.querySelectorAll('.ai-options').forEach(panel => {
+    const allowCode = PracticeCore.hasCode(module?.items || []);
+    panel.querySelectorAll('[data-code-option]').forEach(label=>{label.hidden=!allowCode;label.querySelector('input').disabled=!allowCode;});
     if (panel.dataset.bound) return;
     panel.dataset.bound = 'true';
     panel.addEventListener('change', () => {
@@ -3074,18 +3080,20 @@ function bindAiOptions(root = responseBody) {
       if (custom && !input.checkValidity()) { input.reportValidity(); return; }
       const count = Number(custom ? input.value : panel.querySelector('[data-ai-count]').value);
       const difficulty = panel.querySelector('[data-ai-difficulty]').value;
-      try { localStorage.setItem(aiOptionsKey, JSON.stringify({count,difficulty})); } catch { /* Preferences are optional. */ }
+      try { localStorage.setItem(aiOptionsKey, JSON.stringify({count,difficulty,questionTypes:[...panel.querySelectorAll("[data-question-type]:checked:not(:disabled)")].map(el=>el.value),cardTypes:[...panel.querySelectorAll("[data-card-type]:checked:not(:disabled)")].map(el=>el.value)})); } catch { /* Preferences are optional. */ }
     });
   });
   refreshAiStatus(root);
 }
-function selectedAiOptions() {
+function selectedAiOptions(mode) {
   const panel = responseBody.querySelector('.ai-options');
   if (!panel) return readAiOptions();
   const custom = panel.querySelector('[data-ai-count]').value === 'custom';
   const input = panel.querySelector('[data-ai-custom]');
   if (custom && !input.reportValidity()) return null;
-  return { count:Number(custom ? input.value : panel.querySelector('[data-ai-count]').value), difficulty:panel.querySelector('[data-ai-difficulty]').value };
+  const questionTypes=[...panel.querySelectorAll('[data-question-type]:checked:not(:disabled)')].map(el=>el.value),cardTypes=[...panel.querySelectorAll('[data-card-type]:checked:not(:disabled)')].map(el=>el.value);
+  if(((!mode || mode==='mcq') && !questionTypes.length) || ((!mode || mode!=='mcq') && !cardTypes.length)){panel.querySelector('[data-type-error]').textContent='Choose at least one type for the tool you are generating.';return null;}
+  return { count:Number(custom ? input.value : panel.querySelector('[data-ai-count]').value), difficulty:panel.querySelector('[data-ai-difficulty]').value,questionTypes,cardTypes };
 }
 function renderAiStatus() { return '<p data-ai-status role="status">Checking AI configuration…</p>'; }
 async function fetchAiStatus() {
@@ -3204,7 +3212,7 @@ async function generateAiBatches(payload, {signal, onProgress = () => {}} = {}) 
   const requested = payload.count;
   const key = payload.mode === 'mcq' ? 'mcq' : 'flashcards';
   const result = {flashcards:[],mcq:[],keyPoints:[],studyPlan:[],summary:'',warnings:[],requestedCount:requested,difficulty:payload.difficulty};
-  const chosen = payload.index ? selectIndexedConcepts(payload.index,requested) : null;
+  const chosen = payload.index ? preferredPracticeConcepts(payload) : null;
   const groups = chosen ? groupIndexedConcepts(chosen,payload.index) : null;
   const planned = groups ? groups.length : Math.ceil(requested / 10);
   const usedConcepts = new Set();
@@ -3221,7 +3229,7 @@ async function generateAiBatches(payload, {signal, onProgress = () => {}} = {}) 
         const ids=new Set(concepts.flatMap(c=>c.evidenceIds));
         const passages=payload.index.plan.batches.flat().filter(p=>ids.has(p.id));
         const sourceIds=new Set(passages.map(p=>p.sourceId));
-        wire={mode:payload.mode,courseId:payload.courseId,moduleId:payload.moduleId,courseName:payload.courseName,moduleName:payload.moduleName,difficulty:payload.difficulty,count:concepts.length,
+        wire={mode:payload.mode,courseId:payload.courseId,moduleId:payload.moduleId,courseName:payload.courseName,moduleName:payload.moduleName,difficulty:payload.difficulty,questionTypes:payload.questionTypes,cardTypes:payload.cardTypes,count:concepts.length,
           previousQuestions:wire.previousQuestions,concepts,passages,sources:payload.index.plan.sources.filter(s=>sourceIds.has(s.id))};
       }
       const batch = await fetchAiTutorResult(wire, {signal});
@@ -3251,7 +3259,7 @@ async function generateAiBatches(payload, {signal, onProgress = () => {}} = {}) 
   return result;
 }
 async function runAiTutor(course, module, mode, {indexMode, allowPartial = false, retryPart} = {}) {
-  const options = selectedAiOptions();
+  const options = selectedAiOptions(mode);
   if (!options) return;
   invalidateModuleRequests();
   const startingVersion = moduleRequestVersion;
@@ -3310,7 +3318,8 @@ async function runAiTutor(course, module, mode, {indexMode, allowPartial = false
     if (result.madeCount) {
       assertAiPracticeResult(result, mode);
       module.generated ||= {};
-      module.generated[mode] = {result, at: Date.now()};
+      const at=saveGeneratedPractice(course,module,mode,result);
+      module.generated[mode] = {result, at};
       if (mode === 'study') {
         const note = { id: `module-note-${course.id}-${module.id}`, title: `Notes: ${module.name}`, topic: course.name, color: 'yellow', x: 20, y: 20,
           content: [...(result.keyPoints || []).map(point => point.text), ...result.flashcards.map(card => `${card.front} ${card.back}`)].join('\n\n') };
@@ -3349,8 +3358,7 @@ function renderAiTutorResult(course, module, result, mode) {
     ${result.coverage ? `<p class="generation-coverage" role="status">${result.coverage.items} ${mode==='mcq'?'questions':'cards'} from ${result.coverage.sourcesUsed} of ${result.coverage.totalSources} readable sources. ${result.coverage.conceptsAvailable} concepts available. ${result.coverage.partsIndexed} of ${result.coverage.totalParts} indexing parts complete${result.coverage.mode==='quick'?' · Quick sample':''}.</p>` : ''}
     ${result.notice ? `<p role="${result.shortfall ? 'alert' : 'status'}">${escapeHtml(result.notice)} ${escapeHtml((result.warnings || []).join(' '))}</p>` : ''}
     ${mode !== 'mcq' && result.keyPoints?.length ? `<section class="important-points"><h3>Important points</h3><ul>${result.keyPoints.map(point => `<li>${escapeHtml(point.text)}${aiSourceCitation(point)}</li>`).join('')}</ul></section>` : ''}
-    ${mode !== 'mcq' ? `<h3>Practice questions</h3><div class="map">${cards.map((card,index) => `<details class="flashcard"><summary>${index+1}. ${escapeHtml(card.front)} <small>Reveal answer</small></summary><p>${escapeHtml(card.back)}</p>${aiSourceCitation(card)}</details>`).join('') || '<p>No flashcards returned.</p>'}</div>` : ''}
-    ${mode !== 'flashcards' ? `<h3>AI MCQ Quiz</h3><div class="map">${questions.map(renderAiMcqCard).join('') || '<p>No questions returned.</p>'}</div>` : ''}
+    ${cards.length || questions.length ? renderPracticeSession(course,module,result,mode) : '<p>No practice items returned.</p>'}
     ${renderAiOptions()}${renderAiStatus()}<button type="button" data-ai-tutor-mode="${mode}">Generate again</button>`;
 }
 function renderAiMcqCard(question, index) {
@@ -3362,6 +3370,7 @@ function renderAiMcqCard(question, index) {
   </fieldset>`;
 }
 function bindAiPractice() {
+  bindPracticeSessions();
   responseBody.querySelectorAll('[data-check-ai-answer]').forEach(button => button.addEventListener('click', () => {
     const card = button.closest('[data-ai-question]');
     const choice = card.querySelector('input:checked');
@@ -3372,15 +3381,13 @@ function bindAiPractice() {
   }));
 }
 function assertAiPracticeResult(result, mode) {
-  const cards = result.flashcards, questions = result.mcq;
-  if (!Array.isArray(cards) || !Array.isArray(questions) ||
-      (['flashcards', 'study'].includes(mode) && !cards.length) || (mode === 'mcq' && !questions.length) ||
-      cards.some(card => !card || ![card.front,card.back,card.source,card.evidence].every(value => typeof value === 'string' && value.trim())) ||
-      questions.some(q => !q || ![q.question,q.answer,q.explanation,q.source,q.evidence].every(value => typeof value === 'string' && value.trim()) || !Array.isArray(q.choices) || q.choices.length !== 4 || !q.choices.includes(q.answer))) throw Error('AI returned no valid source-grounded practice for this tool. Try generating again.');
+  const cards=result.flashcards,questions=result.mcq;
+  const valid=(item,card)=>Boolean(PracticeCore.normalizeItem(item,card,{legacy:true})) && [item.source,item.evidence].every(v=>typeof v==='string' && v.trim());
+  if(!Array.isArray(cards) || !Array.isArray(questions) || (['flashcards','study'].includes(mode) && !cards.length) || (mode==='mcq' && !questions.length) || cards.some(c=>!valid(c,true)) || questions.some(q=>!valid(q,false)))throw Error('AI returned no valid source-grounded practice for this tool. Try generating again.');
 }
 
 function aiModeLabel(mode) {
-  if (mode === "mcq") return "AI MCQ quiz";
+  if (mode === "mcq") return "AI quiz";
   if (mode === "flashcards") return "AI flashcards";
   return "AI study guide";
 }
