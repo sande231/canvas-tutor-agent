@@ -1,3 +1,5 @@
+const {fixtureConcepts}=require('./helpers/index-fixture');
+const {buildEvidencePassages}=require('../source-index');
 const test=require('node:test');
 const assert=require('node:assert/strict');
 const fs=require('node:fs');
@@ -80,13 +82,16 @@ test('real Create buttons → actual server validation → interactive flashcard
  w.localStorage.setItem('canvas-tutor-ai-options-v1',JSON.stringify({count:1,difficulty:'mixed'}));
  global.fetch=async(url, options)=>{
   calls++;
-  assert.match(JSON.parse(options.body).input[0].content[0].text, /\[S1P1\]/);
-  const output={...result,flashcards:result.flashcards.map(({sourceId,evidence,...card})=>({...card,evidenceId:'S1P1'})),mcq:result.mcq.map(({sourceId,evidence,...q})=>({...q,answer:'A',evidenceId:'S1P1'}))};
+  const prompt=JSON.parse(options.body).input[0].content[0].text;
+  const evidenceId=prompt.match(/\[(src:[^\]]+)\]/)[1];
+  const conceptId=prompt.match(/"id":"(concept:[^"]+)"/)[1];
+  const output={...result,flashcards:result.flashcards.map(({sourceId,evidence,...card})=>({...card,evidenceId,conceptId})),mcq:result.mcq.map(({sourceId,evidence,...q})=>({...q,answer:'A',evidenceId,conceptId}))};
   return {ok:true,json:async()=>({status:'completed',output_text:JSON.stringify(output)})};
  };
  w.fetch=async(url,options)=>{
   if(url==='/api/ai-status')return {ok:true,json:async()=>({configured:true,model:'fixture'})};
   const body=JSON.parse(options?.body||'{}');let data;
+  if(url==='/api/ai-index')return {ok:true,json:async()=>({concepts:fixtureConcepts(body.passages)})};
   if(url==='/api/ai-tutor'){const outcome=await invoke(body);return {ok:outcome.status===200,json:async()=>outcome.body};}
   const p=body.path||'';
   const page=new URL(p||'/', 'https://canvas.example').searchParams.get('page');
@@ -99,7 +104,7 @@ test('real Create buttons → actual server validation → interactive flashcard
   return {ok:true,status:200,json:async()=>data};
  };
  try{
-  w.eval(['source-quality.js','app.js','ui.js'].map(name=>fs.readFileSync(path.join(root,name),'utf8')).join('\n'));
+  w.eval(['source-quality.js','source-index.js','app.js','ui.js'].map(name=>fs.readFileSync(path.join(root,name),'utf8')).join('\n'));
   w.document.querySelector('#canvas-url').value='https://canvas.example';w.document.querySelector('#canvas-token').value='fixture';w.document.querySelector('#connect-canvas').click();
   await waitFor(()=>w.document.querySelector('.course-card'));
   w.location.hash='course/201/flashcards';await waitFor(()=>w.document.querySelector('[data-module-flashcards]'));
@@ -149,6 +154,7 @@ test('server deadline covers a stalled provider connection and stalled response 
 test('passage citations accept valid cards and letter answers, reject invented or cross-source references',()=>{
  const body={flashcards:[{front:'Why inspect missing values?',back:'Their cause can affect analysis.',evidenceId:'S1P1'}],mcq:[{question:'Which is affected by missing values?',choices:['Analysis','File names','Nothing','Slide order'],answer:'A',explanation:'Missing values affect analysis.',evidenceId:'S1P1'}]};
  const sources=[{id:'file-42',title:'EDA.ppt',text:'Slide 7:\nMissing values should be investigated because their cause can affect the analysis.'}];
+ body.flashcards[0].evidenceId=body.mcq[0].evidenceId=buildEvidencePassages(sources)[0].id;
  const parsed=server.validateGroundedResult(server.parseAiTutorJson(JSON.stringify(body)),sources);
  assert.equal(parsed.flashcards.length,1);assert.equal(parsed.mcq.length,1);
  assert.equal(parsed.mcq[0].answer,'Analysis');assert.equal(parsed.mcq[0].section,'Slide 7');

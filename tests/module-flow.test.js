@@ -1,3 +1,4 @@
+const {fixtureIndexedResponse}=require('./helpers/index-fixture');
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -7,8 +8,8 @@ const root = path.join(__dirname, '..');
 function app(handler) {
   const dom = new JSDOM(fs.readFileSync(path.join(root,'index.html'),'utf8'), {url:'http://127.0.0.1:4177',runScripts:'outside-only'});
   dom.window.localStorage.setItem('canvas-tutor-ai-options-v1',JSON.stringify({count:1,difficulty:'mixed'}));
-  dom.window.fetch = async (url, options) => ({ok:true,status:200,json:async()=>url === '/api/ai-status' ? {configured:true,model:'fixture'} : handler(url, JSON.parse(options?.body || '{}'))});
-  dom.window.eval(fs.readFileSync(path.join(root,'source-quality.js'),'utf8') + '\n' + fs.readFileSync(path.join(root,'app.js'),'utf8'));
+  dom.window.fetch = async (url, options) => ({ok:true,status:200,json:async()=>url === '/api/ai-status' ? {configured:true,model:'fixture'} : fixtureIndexedResponse(url, JSON.parse(options?.body || '{}'),handler)});
+  dom.window.eval(fs.readFileSync(path.join(root,'source-quality.js'),'utf8') + '\n' + fs.readFileSync(path.join(root,'source-index.js'),'utf8') + '\n' + fs.readFileSync(path.join(root,'app.js'),'utf8'));
   return dom;
 }
 const content = 'Behavioral ethics examines how people actually make moral decisions, including the influence of bias.';
@@ -42,8 +43,8 @@ test('module pagination resolves page, discussion, assignment, file and external
     assert.equal(module.items[0].status,'heading');
     assert.match(module.items[6].reason,/empty body/);
     assert.equal(aiPayload.courseId,201); assert.equal(aiPayload.moduleId,4);
-    assert.equal(aiPayload.sources.length,5);
-    assert.ok(aiPayload.sources.every(source=>source.text.includes('moral decisions')));
+    assert.equal(module.index.plan.sources.length,5);assert.equal(aiPayload.concepts.length,1);
+    assert.ok(aiPayload.passages.every(p=>p.text.includes('moral decisions')));
     assert.match(w.document.querySelector('#response-body').textContent,/Partial coverage/);
     assert.ok(calls.some(([,b])=>b.path?.includes('page=3')));
   } finally {dom.window.close();}
@@ -121,7 +122,7 @@ test('stalled generation leaves loading with Retry; the retry renders cards succ
  });
  try{
   const w=dom.window,realFetch=w.fetchAiTutorResult;
-  w.fetchAiTutorResult=payload=>realFetch(payload,{timeoutMs:5});
+  w.fetchAiTutorResult=(payload,options={})=>realFetch(payload,{...options,timeoutMs:5});
   await w.runAiTutor({id:1,name:'Course'},{id:4,name:'Week 4',items:[]},'flashcards');
   assert.equal(w.document.querySelector('#generation-progress'),null);
   assert.match(w.document.querySelector('#response-body [role="alert"]').textContent,/timed out/);

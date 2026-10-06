@@ -99,8 +99,9 @@ async function renderCourseTab(context, tab) {
     const saved = practiceMode && !context.chooseModule ? modules.filter(module => module.generated?.[practiceMode]).sort((a,b) => b.generated[practiceMode].at - a.generated[practiceMode].at)[0] : null;
     context.chooseModule = false;
     if (saved) {
-      showResponse('AI Tutor', moduleCoverage(saved) + renderAiTutorResult(course, saved, saved.generated[practiceMode].result, practiceMode) + '<button id="choose-study-module" type="button">Choose another module</button>');
+      showResponse('AI Tutor', moduleCoverage(saved) + renderModuleIndex(saved.index) + renderAiTutorResult(course, saved, saved.generated[practiceMode].result, practiceMode) + '<button id="choose-study-module" type="button">Choose another module</button>');
       bindModuleNoteActions(course, saved);
+      bindModuleIndex(course, saved, practiceMode);
       responseBody.querySelector('#choose-study-module').onclick = () => { context.chooseModule = true; renderCourseTab(context, tab); };
       return;
     }

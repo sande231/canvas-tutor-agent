@@ -27,7 +27,7 @@ function createApp(saved) {
       : [];
     return { status: 200, ok: true, json: async () => data };
   };
-  w.eval(fs.readFileSync(path.join(root, 'source-quality.js'), 'utf8') + '\n' + fs.readFileSync(path.join(root, 'app.js'), 'utf8') + '\n' + fs.readFileSync(path.join(root, 'ui.js'), 'utf8'));
+  w.eval(fs.readFileSync(path.join(root, 'source-quality.js'), 'utf8') + '\n' + fs.readFileSync(path.join(root, 'source-index.js'), 'utf8') + '\n' + fs.readFileSync(path.join(root, 'app.js'), 'utf8') + '\n' + fs.readFileSync(path.join(root, 'ui.js'), 'utf8'));
   return { dom, w, requests };
 }
 const settle = () => new Promise(resolve => setTimeout(resolve, 30));

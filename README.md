@@ -441,9 +441,9 @@ Generation runs sequential batches of at most 10, passing earlier questions to
 avoid repetition and merging distinct, validated results. Two additional calls
 at most can fill a shortfall. Cancel keeps completed items; switching modules
 still discards late results. The displayed “Made N of M” count reports shortages
-and provider failures without inventing replacement questions. Source excerpts
-remain limited to 12,000 characters per source and 45,000 total, shared across
-readable sources; the reading details disclose this coverage limit.
+and provider failures without inventing replacement questions. Phase 3 indexes the extracted passages from across each source before selecting
+concepts and supporting evidence for generation; it no longer uses the old
+12,000-per-source / 45,000-total prefix excerpts.
 
 The backend uses the Responses API's strict `text.format` JSON schema. The
 configured default, `gpt-5-mini`, supports this format; an explicit unsupported
@@ -465,8 +465,9 @@ latency, account access or whether a particular module supports the chosen count
 ### Full source extraction and session cache (Phase 2)
 
 The reader retains full extracted text up to explicit safety limits. These are
-separate from the unchanged AI input budget (12,000 characters per source,
-45,000 total). PDFs inside ZIP archives use PDF.js, just like standalone PDFs.
+separate from AI request sizes. Phase 3 indexes these passages in bounded
+batches instead of sending only file prefixes. PDFs inside ZIP archives use
+PDF.js, just like standalone PDFs.
 Plain text and code preserve their complete bodies, rather than a code summary.
 
 Canvas page, assignment and discussion headings appear as `Section: …` lines.
@@ -506,3 +507,56 @@ use the defaults. No dependencies were added.
 | `READER_ZIP_TOTAL_BYTES` | 128,000,000 expanded bytes |
 
 Network-download limits and SSRF protections remain in `safe-reader.js`.
+
+
+### Whole-module concept indexing (Phase 3)
+
+Before generating new practice, Canvas Tutor reads and indexes the module's
+extracted passages. Small modules index automatically; larger modules first show
+the number of indexing calls and offer **Full (every page)**, selected by default,
+or **Quick (a sample of each file)**. Full sends every extracted passage in
+batches targeting 18,000 text characters (at most 20,000). Quick selects the
+beginning, middle and end of each readable source. Both modes disclose their
+passage coverage; unreadable content and extraction safety limits still apply.
+The estimates count initial indexing calls; retries and generation are additional.
+
+`source-index.js` is shared by browser and Node. `buildEvidencePassages` assigns
+IDs from the source ID, passage number and SHA-256 fingerprint of its section and
+text. Reordering sources does not change IDs; changed evidence gets a new ID.
+`POST /api/ai-index` validates the passage bundle, requests structured concepts,
+and checks every evidence reference using the existing grounding validator.
+Unknown references and unsupported concepts are discarded. Source material is
+untrusted data and cannot override the indexing instructions. Indexing uses the
+same Responses API [strict structured output format](https://developers.openai.com/api/docs/guides/structured-outputs?api-mode=responses)
+as practice generation, with the existing bounded retries and deadlines.
+
+The browser shows “Indexing part N of M” and supports Cancel. Completed parts
+remain in `module.index`; failed parts have individual Retry buttons. Resume
+retries unfinished parts without repeating completed calls, or the student can
+explicitly generate from the available concepts. Normalized concept names merge
+across parts, preserving all evidence references and the most important
+explanation. Full indexing means all selected text was submitted, not that a
+model is guaranteed to extract every possible fact.
+
+Generation gives each available source a turn, then allocates additional
+concepts proportionally to source length, preferring important concepts within
+each source. Each call includes at most ten selected concepts and only their
+supporting passages. The evidence supporting a merged explanation is retained;
+large evidence sets are grouped into more calls rather than cut off. Generated
+items must reference a selected `conceptId` and evidence belonging to it. The
+server attaches the original text. A concept produces at most one item per set,
+so a small index may produce fewer items than requested.
+
+Coverage reports count the actual generated items and cited sources, total
+readable sources, available concepts, completed indexing parts and Quick/Full
+mode. They do not imply that a short quiz covers every concept. **Generate
+again** reuses the session index. Re-reading a module, adding an upload,
+reconnecting, or reloading invalidates it; saved study notes remain independent.
+Small direct API requests remain supported, but requests exceeding 20,000 text
+characters must use indexing instead of being silently truncated.
+
+Phase 3 fixture checks cover browser/Node ID parity, changed evidence, full and
+sampled passage coverage, partial failures and retries, cancellation and stale
+results, source weighting, multi-passage concept evidence, and a question citing
+an important fact found only at the end of the final source. Live model quality,
+latency and account access still need a live Canvas/OpenAI check.

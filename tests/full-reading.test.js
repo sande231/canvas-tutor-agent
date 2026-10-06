@@ -1,3 +1,4 @@
+const {fixtureIndexedResponse}=require('./helpers/index-fixture');
 const test = require('node:test');
 const assert = require('node:assert/strict');
 process.env.EMAIL_DISABLED = '1';
@@ -81,8 +82,8 @@ function app(handler) {
  const root=path.join(__dirname,'..');
  const dom=new JSDOM(fs.readFileSync(path.join(root,'index.html'),'utf8'),{url:'http://127.0.0.1:4177',runScripts:'outside-only'});
  dom.window.localStorage.setItem('canvas-tutor-ai-options-v1',JSON.stringify({count:1,difficulty:'mixed'}));
- dom.window.fetch=async(url,options)=>({ok:true,status:200,json:async()=>url==='/api/ai-status'?{configured:true,model:'fixture'}:handler(url,JSON.parse(options?.body||'{}'))});
- dom.window.eval(['source-quality.js','app.js'].map(name=>fs.readFileSync(path.join(root,name),'utf8')).join('\n') + '\ncanvasConnection = {baseUrl:"https://canvas.example",token:"fixture-memory-only",profile:{},courses:[]}; window.newFixtureSession = () => {canvasReadingSession++;};');
+ dom.window.fetch=async(url,options)=>({ok:true,status:200,json:async()=>url==='/api/ai-status'?{configured:true,model:'fixture'}:fixtureIndexedResponse(url,JSON.parse(options?.body||'{}'),handler)});
+ dom.window.eval(['source-quality.js','source-index.js','app.js'].map(name=>fs.readFileSync(path.join(root,name),'utf8')).join('\n') + '\ncanvasConnection = {baseUrl:"https://canvas.example",token:"fixture-memory-only",profile:{},courses:[]}; window.newFixtureSession = () => {canvasReadingSession++;};');
  return dom;
 }
 const firstPage=body=>new URL(body.path,'https://canvas.example').searchParams.get('page')==='1';

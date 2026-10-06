@@ -1364,7 +1364,7 @@ async function hydrateSelectedModule(course, modules, moduleId, title, {force = 
   module.courseId = course.id;
   module.requestVersion = version;
   const session = canvasReadingSession;
-  if (force) { module.hydrated = false; module.generated = {}; }
+  if (force) { module.hydrated = false; module.generated = {}; module.index = null; }
   if (!force && module.hydrated && module.readingSession === session) return module;
   showResponse(title, `<p id="reading-progress" role="status">Reading the actual sources in ${escapeHtml(module.name)}…</p>`);
   try {
@@ -1409,6 +1409,7 @@ async function hydrateSelectedModule(course, modules, moduleId, title, {force = 
     module.hydrated = true;
     module.readingSession = session;
     module.readAt = Date.now();
+    module.index = null;
     if (force) module.generated = {};
     return module;
   } catch (error) {
@@ -1419,7 +1420,7 @@ async function hydrateSelectedModule(course, modules, moduleId, title, {force = 
 function moduleCoverage(module, {allowReread = true} = {}) {
   const sources = module.items.filter(hasReadableStudyText);
   const documents = module.items.filter(item => item.type !== 'SubHeader');
-  return `${allowReread ? '<button type="button" data-reread-module>Re-read module</button>' : ''}<p class="coverage-summary">Based on ${sources.length} of ${documents.length} sources.${sources.length < documents.length ? ' Partial coverage: unreadable sources are excluded.' : ''}</p><details class="source-details"><summary>Sources and reading details</summary><p>AI uses excerpts of up to 12,000 characters per source and 45,000 total, shared across readable sources. Longer documents are not covered in full.</p>${sources.length ? `<ul>${sources.map(item => `<li>${escapeHtml(item.title)}</li>`).join('')}</ul>` : '<p>No readable material. No study content was generated.</p>'}${renderModuleSourceReport(module)}</details>`;
+  return `${allowReread ? '<button type="button" data-reread-module>Re-read module</button>' : ''}<p class="coverage-summary">Based on ${sources.length} of ${documents.length} sources.${sources.length < documents.length ? ' Partial coverage: unreadable sources are excluded.' : ''}</p><details class="source-details"><summary>Sources and reading details</summary><p>Full indexing reads every extracted passage in batches. Quick indexing samples each file. Generation uses selected concepts and their original evidence; its source coverage is reported with the results.</p>${sources.length ? `<ul>${sources.map(item => `<li>${escapeHtml(item.title)}</li>`).join('')}</ul>` : '<p>No readable material. No study content was generated.</p>'}${renderModuleSourceReport(module)}</details>`;
 }
 
 function showUnreadableModule(course, module) {
@@ -2992,6 +2993,8 @@ async function importDownloadedModuleFile(course, module, file, mode) {
       readDebug: "downloaded from your Canvas browser session",
     };
 
+    module.index = null;
+    module.generated = {};
     module.items = [importedItem, ...module.items.filter((item) => item.title !== importedItem.title)];
     module.hydrated = true;
 
@@ -3111,7 +3114,7 @@ async function refreshAiStatus(root) {
 let activeAiGeneration = null;
 let activeAiRequest = null;
 function cancelAiGeneration() { activeAiGeneration?.abort(); activeAiRequest?.abort(); }
-async function fetchAiTutorResult(payload, { timeoutMs = 85000, signal } = {}) {
+async function fetchAiTutorResult(payload, { timeoutMs = 85000, signal, endpoint = '/api/ai-tutor' } = {}) {
   const controller = new AbortController();
   activeAiRequest = controller;
   const cancel = () => controller.abort();
@@ -3130,7 +3133,7 @@ async function fetchAiTutorResult(payload, { timeoutMs = 85000, signal } = {}) {
   try {
     return await Promise.race([
       (async () => {
-        const response = await fetch('/api/ai-tutor', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload), signal:controller.signal});
+        const response = await fetch(endpoint, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload), signal:controller.signal});
         const result = await response.json();
         if (!response.ok || result.error) throw Error([result.error || `Generation failed (HTTP ${response.status}). Try again.`, ...(result.warnings || [])].join(' '));
         return result;
@@ -3147,24 +3150,88 @@ async function fetchAiTutorResult(payload, { timeoutMs = 85000, signal } = {}) {
 function practiceItemKey(text) {
   return String(text).normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu,' ').trim();
 }
+async function indexModuleBatches(module, {signal, isCurrent = () => true, onProgress = () => {}, retryPart} = {}) {
+  const index = module.index;
+  for (let number=0;number<index.parts.length;number++) {
+    const part=index.parts[number];
+    if (retryPart !== undefined ? number !== retryPart : part.status === 'complete') continue;
+    if (signal?.aborted || !isCurrent()) break;
+    part.status='reading';onProgress(number+1,index.parts.length);
+    try {
+      const passages=index.plan.batches[number];
+      const sourceIds=new Set(passages.map(p=>p.sourceId));
+      const result=await fetchAiTutorResult({passages,sources:index.plan.sources.filter(s=>sourceIds.has(s.id))},{signal,endpoint:'/api/ai-index'});
+      if (signal?.aborted || !isCurrent()) {part.status='pending';break;}
+      if (!Array.isArray(result.concepts)) throw Error('Index response is missing concepts. Retry this part.');
+      const known=new Set(passages.map(p=>p.id));
+      if (result.concepts.some(c=>!c || typeof c.name!=='string' || typeof c.explanation!=='string' || ![1,2,3].includes(c.importance) || !Array.isArray(c.evidenceIds) || !c.evidenceIds.length || c.evidenceIds.some(id=>!known.has(id)))) throw Error('Index returned unknown evidence. Retry this part.');
+      part.concepts=result.concepts;part.status='complete';part.error='';part.warnings=result.warnings || [];
+    } catch (error) {
+      part.status=signal?.aborted?'pending':'failed';part.error=error.message;
+      if(signal?.aborted || !isCurrent()) break;
+    }
+    index.concepts=mergeIndexedConcepts(index.parts.flatMap(p=>p.status==='complete'?p.concepts:[]));
+  }
+  return index;
+}
+function renderModuleIndex(index) {
+  if (!index) return '';
+  const complete=index.parts.filter(p=>p.status==='complete').length;
+  return `<section class="module-index"><h3>Module index</h3><p role="status">${complete} of ${index.parts.length} parts indexed · ${index.concepts.length} concepts available. ${index.plan.mode === 'quick' ? 'Quick sample' : 'Full indexing'}: ${index.plan.selectedPassages} of ${index.plan.totalPassages} extracted passages selected.</p>
+    ${index.parts.map((part,i)=>part.status==='complete' ? (part.warnings?.length ? `<p>${escapeHtml(part.warnings.join(' '))}</p>` : '') : `<p ${part.status==='failed'?'role="alert"':''}>Part ${i+1}: ${escapeHtml(part.error || 'Not indexed yet.')} <button type="button" data-retry-index="${i}">${part.status==='failed'?'Retry':'Read'} part ${i+1}</button></p>`).join('')}
+    ${complete<index.parts.length?'<button type="button" data-resume-index>Resume unfinished parts</button>':''}
+    ${index.concepts.length && complete<index.parts.length?'<button type="button" data-generate-index>Generate from available concepts</button>':''}
+    ${index.plan.mode==='quick'?'<button type="button" data-full-index>Index the full module</button>':''}</section>`;
+}
+function bindModuleIndex(course,module,mode) {
+  responseBody.querySelectorAll('[data-retry-index]').forEach(button=>button.addEventListener('click',()=>runAiTutor(course,module,mode,{retryPart:Number(button.dataset.retryIndex)})));
+  responseBody.querySelector('[data-resume-index]')?.addEventListener('click',()=>runAiTutor(course,module,mode));
+  responseBody.querySelector('[data-generate-index]')?.addEventListener('click',()=>runAiTutor(course,module,mode,{allowPartial:true}));
+  responseBody.querySelector('[data-full-index]')?.addEventListener('click',()=>runAiTutor(course,module,mode,{indexMode:'full'}));
+}
+function showIndexChoice(course,module,mode,sources,full) {
+  const quick=createIndexPlan(sources,'quick');
+  showResponse('Read and index module', `<p>This module has ${sources.length} readable sources and ${full.totalPassages} extracted passages.</p>
+    <fieldset><legend>Choose indexing coverage</legend>
+    <label class="quiz-choice"><input type="radio" name="index-mode" value="full" checked> Full (every page): ${full.batches.length} AI calls</label>
+    <label class="quiz-choice"><input type="radio" name="index-mode" value="quick"> Quick (a sample of each file): ${quick.batches.length} AI calls</label></fieldset>
+    <p>Full indexes all extracted text, including the ends of files. Quick samples the beginning, middle and end. Unreadable content and extraction safety limits still apply. Failed calls may need retries; generation uses additional calls.</p>
+    ${renderAiOptions()}<button type="button" data-start-index>Read and index module</button>` + moduleCoverage(module));
+  bindModuleNoteActions(course,module);
+  responseBody.querySelector('[data-start-index]').addEventListener('click',()=>runAiTutor(course,module,mode,{indexMode:responseBody.querySelector('[name="index-mode"]:checked').value}));
+}
 async function generateAiBatches(payload, {signal, onProgress = () => {}} = {}) {
   const requested = payload.count;
   const key = payload.mode === 'mcq' ? 'mcq' : 'flashcards';
   const result = {flashcards:[],mcq:[],keyPoints:[],studyPlan:[],summary:'',warnings:[],requestedCount:requested,difficulty:payload.difficulty};
-  const planned = Math.ceil(requested / 10);
+  const chosen = payload.index ? selectIndexedConcepts(payload.index,requested) : null;
+  const groups = chosen ? groupIndexedConcepts(chosen,payload.index) : null;
+  const planned = groups ? groups.length : Math.ceil(requested / 10);
+  const usedConcepts = new Set();
   const seen = new Set(), points = new Set();
   for (let call = 0; call < planned + 2 && result[key].length < requested; call++) {
     if (signal?.aborted) { result.warnings.push('Generation canceled. Completed items were kept.'); break; }
     onProgress(result[key].length, call + 1, call >= planned);
     try {
-      const batch = await fetchAiTutorResult({...payload,count:Math.min(10,requested - result[key].length),
-        previousQuestions:result[key].map(item => item.question || item.front)}, {signal});
+      let wire = {...payload,count:Math.min(10,requested - result[key].length),previousQuestions:result[key].map(item => item.question || item.front)};
+      let concepts;
+      if (chosen) {
+        concepts=call<planned ? groups[call] : (groupIndexedConcepts(chosen.filter(c=>!usedConcepts.has(c.id)),payload.index)[0] || []);
+        if (!concepts.length) break;
+        const ids=new Set(concepts.flatMap(c=>c.evidenceIds));
+        const passages=payload.index.plan.batches.flat().filter(p=>ids.has(p.id));
+        const sourceIds=new Set(passages.map(p=>p.sourceId));
+        wire={mode:payload.mode,courseId:payload.courseId,moduleId:payload.moduleId,courseName:payload.courseName,moduleName:payload.moduleName,difficulty:payload.difficulty,count:concepts.length,
+          previousQuestions:wire.previousQuestions,concepts,passages,sources:payload.index.plan.sources.filter(s=>sourceIds.has(s.id))};
+      }
+      const batch = await fetchAiTutorResult(wire, {signal});
       if (signal?.aborted) throw Error('Generation canceled. Completed items were kept.');
       if (!Array.isArray(batch.flashcards) || !Array.isArray(batch.mcq)) throw Error('AI response is missing its practice arrays.');
       if (batch[key].length) assertAiPracticeResult(batch, payload.mode);
       for (const item of batch[key]) {
         const identity = practiceItemKey(item.question || item.front);
-        if (!seen.has(identity) && result[key].length < requested) { seen.add(identity); result[key].push(item); }
+        if (concepts && (!concepts.some(c=>c.id===item.conceptId && c.evidenceIds.includes(item.evidenceId)) || usedConcepts.has(item.conceptId))) continue;
+        if (!seen.has(identity) && result[key].length < requested) { seen.add(identity); usedConcepts.add(item.conceptId); result[key].push(item); }
       }
       for (const point of batch.keyPoints || []) {
         const identity = practiceItemKey(point.text);
@@ -3177,11 +3244,13 @@ async function generateAiBatches(payload, {signal, onProgress = () => {}} = {}) 
   result.warnings = [...new Set(result.warnings)];
   result.madeCount = result[key].length;
   result.shortfall = result.madeCount < requested;
+  if (payload.index) result.coverage = indexedGenerationCoverage(payload.index,result[key]);
   result.notice = `Made ${result.madeCount} of ${requested}.` + (result.shortfall
     ? result.stopped || signal?.aborted ? ' Generation stopped; completed items were kept.' : ' No more valid, distinct, cited items were returned after two top-up attempts.' : '');
+  if (chosen && result.shortfall && !result.stopped && !signal?.aborted && chosen.every(c=>usedConcepts.has(c.id))) result.notice = `Made ${result.madeCount} of ${requested}. The index contains only ${chosen.length} distinct concepts available for this set.`;
   return result;
 }
-async function runAiTutor(course, module, mode) {
+async function runAiTutor(course, module, mode, {indexMode, allowPartial = false, retryPart} = {}) {
   const options = selectedAiOptions();
   if (!options) return;
   invalidateModuleRequests();
@@ -3201,19 +3270,39 @@ async function runAiTutor(course, module, mode) {
   if (!module) return;
   if (!module.items.some(hasReadableStudyText)) { showUnreadableModule(course, module); return; }
   const version = module.requestVersion;
+  const sources = buildAiTutorPayload(course,module,mode).sources;
+  if (!module.index || (indexMode && module.index.plan.mode !== indexMode)) {
+    const plan=createIndexPlan(sources,indexMode || 'full');
+    if (!indexMode && plan.batches.length>1) {showIndexChoice(course,module,mode,sources,plan);return;}
+    module.index={plan,parts:plan.batches.map(()=>({status:'pending',concepts:[]})),concepts:[]};
+  }
   const controller = new AbortController();
   activeAiGeneration = controller;
-  const payload = {...buildAiTutorPayload(course, module, mode), ...options};
-  showResponse('Creating your practice', `<p id="generation-progress" role="status">Creating ${options.count} ${mode === 'mcq' ? 'quiz questions' : 'flashcards'}…</p><button id="cancel-generation" type="button">Cancel generation</button>` + moduleCoverage(module, {allowReread:false}));
-  responseBody.querySelector('#cancel-generation')?.addEventListener('click', cancelAiGeneration);
-  const started = Date.now();
-  let progress = `Made 0 of ${options.count}.`;
-  const updateProgress = () => {
-    const status = responseBody.querySelector('#generation-progress');
-    if (status && version === moduleRequestVersion) status.textContent = `${progress} ${Math.floor((Date.now() - started) / 1000)} seconds elapsed. You can cancel below.`;
-  };
-  const progressTimer = setInterval(updateProgress, 1000);
+  let progressTimer;
+  const current = () => version === moduleRequestVersion && moduleRequestCurrent(module);
   try {
+    if (!allowPartial && (retryPart !== undefined || module.index.parts.some(p=>p.status!=='complete'))) {
+      showResponse('Read and index module','<p id="index-progress" role="status">Preparing passages…</p><button id="cancel-generation" type="button">Cancel indexing</button>');
+      responseBody.querySelector('#cancel-generation').addEventListener('click',cancelAiGeneration);
+      await indexModuleBatches(module,{signal:controller.signal,isCurrent:current,retryPart,onProgress:(part,total)=>{
+        if(current())responseBody.querySelector('#index-progress').textContent=`Indexing part ${part} of ${total}…`;
+      }});
+    }
+    if (!current()) return;
+    if (controller.signal.aborted || (!allowPartial && module.index.parts.some(p=>p.status!=='complete')) || !module.index.concepts.length) {
+      showResponse('Module indexing',`<p role="${controller.signal.aborted?'alert':'status'}">${controller.signal.aborted?'Indexing canceled. Completed parts were kept.':module.index.concepts.length?'Some parts were not indexed. Retry them or generate from the available concepts.':'No supported concepts are available yet. Retry a failed part or re-read the module.'}</p>`+renderModuleIndex(module.index)+renderAiOptions()+moduleCoverage(module));
+      bindModuleNoteActions(course,module);bindModuleIndex(course,module,mode);return;
+    }
+    const payload = {...buildAiTutorPayload(course, module, mode), ...options};
+    showResponse('Creating your practice', `<p id="generation-progress" role="status">Creating ${options.count} ${mode === 'mcq' ? 'quiz questions' : 'flashcards'}…</p><button id="cancel-generation" type="button">Cancel generation</button>` + moduleCoverage(module, {allowReread:false}));
+    responseBody.querySelector('#cancel-generation').addEventListener('click', cancelAiGeneration);
+    const started = Date.now();
+    let progress = `Made 0 of ${options.count}.`;
+    const updateProgress = () => {
+      const status = responseBody.querySelector('#generation-progress');
+      if (status && current()) status.textContent = `${progress} ${Math.floor((Date.now() - started) / 1000)} seconds elapsed. You can cancel below.`;
+    };
+    progressTimer = setInterval(updateProgress, 1000);
     const result = await generateAiBatches(payload, {signal:controller.signal, onProgress:(made,batch,topUp) => {
       progress = `Made ${made} of ${options.count}. ${topUp ? 'Topping up' : 'Generating'} batch ${batch}…`; updateProgress();
     }});
@@ -3228,8 +3317,8 @@ async function runAiTutor(course, module, mode) {
         notes = [...notes.filter(item => item.id !== note.id), note]; selectedId = note.id; render();
       }
     }
-    showResponse(result.madeCount ? 'AI Tutor' : 'Generation stopped', renderAiTutorResult(course, module, result, mode) + moduleCoverage(module));
-    bindModuleNoteActions(course, module);
+    showResponse(result.madeCount ? 'AI Tutor' : 'Generation stopped', renderAiTutorResult(course, module, result, mode) + renderModuleIndex(module.index) + moduleCoverage(module));
+    bindModuleNoteActions(course, module);bindModuleIndex(course,module,mode);
   } catch (error) {
     if (version === moduleRequestVersion) { showResponse('Generation stopped', `<p role="alert">${escapeHtml(error.message)}</p><button type="button" data-ai-tutor-mode="${mode}">Try generation again</button>` + moduleCoverage(module)); bindModuleNoteActions(course, module); }
   } finally { clearInterval(progressTimer); if (activeAiGeneration === controller) activeAiGeneration = null; }
@@ -3237,9 +3326,8 @@ async function runAiTutor(course, module, mode) {
 
 function buildAiTutorPayload(course, module, mode) {
   const readable = module.items.filter(hasReadableStudyText);
-  const perSource = Math.min(12000, Math.floor(45000 / Math.max(1, readable.length)));
-  const sources = readable.map(item => ({ id: String(item.id), title: item.title, text: item.summary.slice(0, perSource) }));
-  return { mode, courseId: course.id, moduleId: module.id, courseName: course.name, moduleName: module.name, sources,
+  const sources = readable.map(item => ({ id: String(item.id), title: item.title, text: item.summary }));
+  return { mode, courseId: course.id, moduleId: module.id, courseName: course.name, moduleName: module.name, sources, index:module.index,
     studyText: sources.map(item => `SOURCE ID: ${item.id}\nSOURCE: ${item.title}\n${item.text}`).join('\n\n---\n\n'), canvasContext: '' };
 }
 
@@ -3258,6 +3346,7 @@ function aiSourceCitation(item) {
 function renderAiTutorResult(course, module, result, mode) {
   const cards = result.flashcards || [], questions = result.mcq || [];
   return `<p><strong>${escapeHtml(module.name)}</strong> · ${escapeHtml(course.name)}</p>
+    ${result.coverage ? `<p class="generation-coverage" role="status">${result.coverage.items} ${mode==='mcq'?'questions':'cards'} from ${result.coverage.sourcesUsed} of ${result.coverage.totalSources} readable sources. ${result.coverage.conceptsAvailable} concepts available. ${result.coverage.partsIndexed} of ${result.coverage.totalParts} indexing parts complete${result.coverage.mode==='quick'?' · Quick sample':''}.</p>` : ''}
     ${result.notice ? `<p role="${result.shortfall ? 'alert' : 'status'}">${escapeHtml(result.notice)} ${escapeHtml((result.warnings || []).join(' '))}</p>` : ''}
     ${mode !== 'mcq' && result.keyPoints?.length ? `<section class="important-points"><h3>Important points</h3><ul>${result.keyPoints.map(point => `<li>${escapeHtml(point.text)}${aiSourceCitation(point)}</li>`).join('')}</ul></section>` : ''}
     ${mode !== 'mcq' ? `<h3>Practice questions</h3><div class="map">${cards.map((card,index) => `<details class="flashcard"><summary>${index+1}. ${escapeHtml(card.front)} <small>Reveal answer</small></summary><p>${escapeHtml(card.back)}</p>${aiSourceCitation(card)}</details>`).join('') || '<p>No flashcards returned.</p>'}</div>` : ''}
