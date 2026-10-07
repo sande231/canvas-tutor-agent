@@ -104,7 +104,7 @@ test('real Create buttons → actual server validation → interactive flashcard
   return {ok:true,status:200,json:async()=>data};
  };
  try{
-  w.eval(['source-quality.js','source-index.js','practice-core.js','app.js','practice-ui.js','ui.js'].map(name=>fs.readFileSync(path.join(root,name),'utf8')).join('\n'));
+  w.eval(['source-quality.js','source-index.js','tutor-core.js','practice-core.js','app.js','practice-ui.js','tutor-ui.js','ui.js'].map(name=>fs.readFileSync(path.join(root,name),'utf8')).join('\n'));
   w.document.querySelector('#canvas-url').value='https://canvas.example';w.document.querySelector('#canvas-token').value='fixture';w.document.querySelector('#connect-canvas').click();
   await waitFor(()=>w.document.querySelector('.course-card'));
   w.location.hash='course/201/flashcards';await waitFor(()=>w.document.querySelector('[data-module-flashcards]'));

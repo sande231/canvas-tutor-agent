@@ -123,7 +123,8 @@ const PracticeCore = (() => {
       if(result?.coverage && typeof result.coverage==='object'){clean.coverage={};for(const k of ['items','sourcesUsed','totalSources','conceptsAvailable','partsIndexed','totalParts','selectedPassages','totalPassages'])if(Number.isFinite(result.coverage[k]))clean.coverage[k]=result.coverage[k];clean.coverage.mode=result.coverage.mode==='quick'?'quick':'full';}
       if(text(result?.notice))clean.notice=result.notice;
       clean.shortfall=Boolean(result?.shortfall);
-      if(clean.flashcards.length || clean.mcq.length)out.sets[mode]={at:saved.at,result:clean};
+      if(mode==='study' && result?.guide){const core=typeof module!=='undefined'&&module.exports?require('./tutor-core'):TutorCore;clean.guide=core.normalizeGuide(result.guide,{citations:true});}
+      if(clean.flashcards.length || clean.mcq.length || (clean.guide && Object.values(clean.guide).some(rows=>rows.length)))out.sets[mode]={at:saved.at,result:clean};
     }
     for(const [id,v] of Object.entries(value.boxes || {}))if(Number.isInteger(v?.box)&&v.box>=1&&v.box<=5&&Number.isFinite(v.due))Object.defineProperty(out.boxes,id,{value:{box:v.box,due:v.due,reviewed:Number(v.reviewed)||0},enumerable:true,writable:true,configurable:true});
     for(const [id,v] of Object.entries(value.concepts || {}))if(text(v?.label)&&Number.isSafeInteger(v.correct)&&v.correct>=0&&Number.isSafeInteger(v.wrong)&&v.wrong>=0&&typeof v.lastCorrect==='boolean')Object.defineProperty(out.concepts,id,{value:{label:v.label,correct:v.correct,wrong:v.wrong,lastCorrect:v.lastCorrect,lastAt:Number(v.lastAt)||0},enumerable:true,writable:true,configurable:true});

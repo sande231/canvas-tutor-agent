@@ -27,7 +27,7 @@ function createApp(saved) {
       : [];
     return { status: 200, ok: true, json: async () => data };
   };
-  w.eval(fs.readFileSync(path.join(root, 'source-quality.js'), 'utf8') + '\n' + fs.readFileSync(path.join(root, 'source-index.js'), 'utf8') + '\n' + fs.readFileSync(path.join(root, 'practice-core.js'), 'utf8') + '\n' + fs.readFileSync(path.join(root, 'app.js'), 'utf8') + '\n' + fs.readFileSync(path.join(root, 'practice-ui.js'), 'utf8') + '\n' + fs.readFileSync(path.join(root, 'ui.js'), 'utf8'));
+  w.eval(fs.readFileSync(path.join(root, 'source-quality.js'), 'utf8') + '\n' + fs.readFileSync(path.join(root, 'source-index.js'), 'utf8') + '\n' + fs.readFileSync(path.join(root, 'tutor-core.js'), 'utf8') + '\n' + fs.readFileSync(path.join(root, 'practice-core.js'), 'utf8') + '\n' + fs.readFileSync(path.join(root, 'app.js'), 'utf8') + '\n' + fs.readFileSync(path.join(root, 'practice-ui.js'), 'utf8') + '\n' + fs.readFileSync(path.join(root, 'tutor-ui.js'), 'utf8') + '\n' + fs.readFileSync(path.join(root, 'ui.js'), 'utf8'));
   return { dom, w, requests };
 }
 const settle = () => new Promise(resolve => setTimeout(resolve, 30));
@@ -55,7 +55,7 @@ test('connection → actual courses → scoped tabs → dashboard → saved boar
       assert.ok(w.document.querySelector('#response-body').textContent.trim());
       if (['ai-tutor','flashcards','quizzes'].includes(tab)) {
         assert.match(w.document.querySelector('[data-ai-status]').textContent,/AI configured.*fixture-model/);
-        assert.ok(w.document.querySelector('.ai-options select'));
+        assert.ok(w.document.querySelector(tab==='ai-tutor'?'[data-tutor-module]':'.ai-options select'));
       }
     }
     await route(w, 'course/2/modules');

@@ -1068,3 +1068,16 @@ blockquote { margin: 16px 0; padding-left: 14px; border-left: 3px solid var(--li
 .practice-session button:focus-visible, .practice-session input:focus-visible, .practice-session select:focus-visible, .practice-session textarea:focus-visible { outline: 3px solid #258563; outline-offset: 3px; }
 .practice-session [hidden], .type-options [hidden] { display: none !important; }
 @media (max-width: 600px) { .type-options { grid-template-columns: 1fr; } .review-card { padding: 1.25rem; } }
+
+/* Cited guides and scoped tutor conversations. */
+.study-guide section { margin: 1.5rem 0; border-top: 1px solid #d9e3de; padding-top: 1rem; }
+.study-guide li { margin: 1rem 0; }
+.source-prose { white-space: pre-wrap; overflow-wrap: anywhere; }
+.tutor-chat { margin: 1rem 0; padding: 1rem; background: #f3f8f5; border: 1px solid #cbded3; border-radius: .7rem; }
+.tutor-chat textarea, .tutor-chat select { width: 100%; box-sizing: border-box; padding: .65rem; border: 1px solid #b8cdc0; border-radius: .4rem; font: inherit; }
+.tutor-chat label { display: block; margin: .6rem 0; }
+.tutor-chat button, [data-open-tutor-module], [data-index-for-chat] { padding: .6rem .8rem; margin: .3rem; border-radius: .4rem; }
+.chat-turns article { background: white; padding: .8rem; margin: .75rem 0; border-radius: .4rem; }
+.item-tutor .practice-actions { gap: .25rem; }
+.item-tutor .practice-actions button { font-size: .85rem; }
+.tutor-chat [hidden] { display: none !important; }

@@ -35,7 +35,7 @@ function browser(handler) {
   if(url==='/api/ai-status')return {ok:true,json:async()=>({configured:true,model:'fixture'})};
   return {ok:true,json:async()=>handler(url,JSON.parse(options?.body||'{}'))};
  };
- dom.window.eval(['source-quality.js','source-index.js','practice-core.js','app.js','practice-ui.js'].map(name=>fs.readFileSync(path.join(root,name),'utf8')).join('\n'));
+ dom.window.eval(['source-quality.js','source-index.js','tutor-core.js','practice-core.js','app.js','practice-ui.js','tutor-ui.js'].map(name=>fs.readFileSync(path.join(root,name),'utf8')).join('\n'));
  return dom;
 }
 function invoke(body,indexing=false) {

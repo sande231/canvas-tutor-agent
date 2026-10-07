@@ -84,8 +84,9 @@ function mountPracticeCards(root,{course,module,result}) {
     root.innerHTML=`<h3>Flashcard review</h3>${storageNotice()}<p role="status">${due().length} due today · ${reviewed} reviewed this session · ${queue.length} in this review</p>
       <p>Space: flip · 1: still learning · 2: know it. Missed cards return until you know them.</p>
       ${card?`<p>${escapeHtml(PracticeCore.cardTypes[card.type])} · ${escapeHtml(card.difficulty)} · Box ${box?.box || 1}</p><button type="button" class="review-card ${flipped?'is-flipped':''}" data-flip aria-pressed="${flipped}"><span class="eyebrow">${flipped?'Answer':'Question'}</span><span>${escapeHtml(flipped?card.back:card.front)}</span>${!flipped && card.code?`<code>${escapeHtml(card.code)}</code>`:''}<small>${flipped?'Flip to question':'Flip to answer'}</small></button>
-      ${flipped?aiSourceCitation(card):''}<div class="practice-actions"><button type="button" data-learning ${flipped?'':'disabled'}>1 · Still learning</button><button type="button" data-known ${flipped?'':'disabled'}>2 · Know it</button></div>`:'<p role="status">Review complete. Your next review dates are saved.</p>'}
+      ${flipped?aiSourceCitation(card):''}${itemTutorButtons(0)}<div class="practice-actions"><button type="button" data-learning ${flipped?'':'disabled'}>1 · Still learning</button><button type="button" data-known ${flipped?'':'disabled'}>2 · Know it</button></div>`:'<p role="status">Review complete. Your next review dates are saved.</p>'}
       <div class="practice-actions"><button type="button" data-due>Review due today</button><button type="button" data-all-cards>Review all cards</button><button type="button" data-weak-cards>Practise my weak spots</button><button type="button" data-export>Export CSV for Anki / Quizlet</button></div><p data-review-notice role="status"></p>`;
+    if(card)bindItemTutor(root,course,module,[card]);
     root.querySelector('[data-flip]')?.addEventListener('click',flip);
     root.querySelector('[data-learning]')?.addEventListener('click',()=>{mark(false);root.querySelector('[data-flip]')?.focus();});
     root.querySelector('[data-known]')?.addEventListener('click',()=>{mark(true);root.querySelector('[data-flip]')?.focus();});
@@ -141,7 +142,7 @@ function mountPracticeQuiz(root,view) {
     root.querySelectorAll('[data-practice-question]').forEach(field=>{
       const i=Number(field.dataset.practiceQuestion),q=entries[i].item;
       if(q.choices){const selected=[...field.querySelectorAll('input:checked')].map(el=>el.value);state.responses[i]=q.type==='multi_select'?selected:selected[0] || '';}
-      else if(q.type==='matching' || q.type==='ordering')state.responses[i]=[...field.querySelectorAll('select')].map(el=>el.value);
+      else if(q.type==='matching' || q.type==='ordering')state.responses[i]=[...field.querySelectorAll('[data-match],[data-step]')].map(el=>el.value);
       else state.responses[i]=field.querySelector('[data-answer]').value;
     });persist();
   }
@@ -186,7 +187,8 @@ function mountPracticeQuiz(root,view) {
       root.insertAdjacentHTML('beforeend',`${gradingErrors.length?`<p role="alert">${escapeHtml([...new Set(gradingErrors)].join(' '))}</p>`:''}<h4 tabindex="-1" data-score>Score: ${score.correct} / ${score.total} (${score.percent}%)</h4>${score.pending?`<p role="alert">${score.pending} answers are awaiting AI grading. This score is provisional; they were not recorded as mistakes.</p><button type="button" data-retry-grade>Retry pending grading</button>`:''}
         <button type="button" data-missed ${score.missed.length?'':'disabled'}>Retry only missed (${score.missed.length})</button><button type="button" data-restart>Retry full set</button>
         <h4>Review mistakes and pending answers</h4>${entries.map(({item:q},i)=>state.results[i]?.correct===true?'':`<article class="mistake-card"><h4>${i+1}. ${escapeHtml(q.question)}</h4><p>Your answer: ${escapeHtml(Array.isArray(state.responses[i])?state.responses[i].join(' · '):state.responses[i] || 'No answer')}</p><p>Correct: ${escapeHtml(q.type==='multi_select'?q.answers.join(' · '):q.type==='ordering'?q.steps.join(' → '):q.type==='matching'?q.pairs.map(p=>p.term+': '+p.definition).join('; '):q.answer)}</p><p>${escapeHtml(q.explanation)}</p>${state.results[i]?.feedback?`<p>AI feedback: ${escapeHtml(state.results[i].feedback)}</p>`:''}${aiSourceCitation(q)}</article>`).join('') || '<p>All correct. Well done!</p>'}
-        <details><summary>Review all answers and sources</summary>${entries.map(({item:q},i)=>`<article><h4>${escapeHtml(q.question)}</h4><p>${escapeHtml(q.answer)}</p><p>${escapeHtml(state.results[i]?.feedback || q.explanation)}</p>${aiSourceCitation(q)}</article>`).join('')}</details>`);
+        <details><summary>Review all answers and sources</summary>${entries.map(({item:q},i)=>`<article><h4>${escapeHtml(q.question)}</h4><p>${escapeHtml(q.answer)}</p><p>${escapeHtml(state.results[i]?.feedback || q.explanation)}</p>${aiSourceCitation(q)}${itemTutorButtons(i)}</article>`).join('')}</details>`);
+      bindItemTutor(root,course,module,entries);
       root.querySelector('[data-missed]').onclick=()=>restart(score.missed.map(i=>entries[i]));
       root.querySelector('[data-restart]').onclick=()=>restart(allEntries);
       root.querySelector('[data-retry-grade]')?.addEventListener('click',()=>{state.finished=false;draw();finish();});
@@ -205,10 +207,11 @@ function mountPracticeQuiz(root,view) {
       };return;
     }
     state.position=Math.min(state.position,entries.length-1);
-    root.insertAdjacentHTML('beforeend',`<p data-time role="status"></p><p>Question ${state.position+1} of ${entries.length}</p>${entries.map(({item:q},i)=>!state.all && i!==state.position?'':`<fieldset class="mcq-card" data-practice-question="${i}"><legend>${i+1}. ${escapeHtml(q.question)}</legend><p>${escapeHtml(PracticeCore.questionTypes[q.type])} · ${escapeHtml(q.difficulty)}</p>${q.code?`<pre><code>${escapeHtml(q.code)}</code></pre>`:''}${questionInputs(q,i,state.responses[i],state.shuffleSeed+PracticeCore.itemId(q))}</fieldset>`).join('')}
+    root.insertAdjacentHTML('beforeend',`<p data-time role="status"></p><p>Question ${state.position+1} of ${entries.length}</p>${entries.map(({item:q},i)=>!state.all && i!==state.position?'':`<fieldset class="mcq-card" data-practice-question="${i}"><legend>${i+1}. ${escapeHtml(q.question)}</legend><p>${escapeHtml(PracticeCore.questionTypes[q.type])} · ${escapeHtml(q.difficulty)}</p>${q.code?`<pre><code>${escapeHtml(q.code)}</code></pre>`:''}${questionInputs(q,i,state.responses[i],state.shuffleSeed+PracticeCore.itemId(q))}${itemTutorButtons(i)}</fieldset>`).join('')}
       <div class="practice-actions">${!state.all?`<button type="button" data-prev ${state.position===0?'disabled':''}>Previous</button><button type="button" data-next ${state.position>=entries.length-1?'disabled':''}>Next</button>`:''}<button type="button" data-finish>Finish quiz</button><button type="button" data-cancel-grade hidden>Cancel grading</button></div>`);
     root.querySelector('[data-prev]')?.addEventListener('click',()=>{capture();state.position--;persist();draw();root.querySelector('input,textarea,select')?.focus();});
     root.querySelector('[data-next]')?.addEventListener('click',()=>{capture();state.position++;persist();draw();root.querySelector('input,textarea,select')?.focus();});
+    bindItemTutor(root,course,module,entries);
     root.querySelector('[data-finish]').onclick=finish;
   }
   root.addEventListener('input',()=>{if(!state.finished && state.started && !grading)capture();});
@@ -263,9 +266,10 @@ function savedPracticeRecords() {
 }
 function showSavedPractice() {
   const records=savedPracticeRecords();
-  showResponse('Saved practice',`<p>Study content saved on this browser. No Canvas connection is needed to review it. Short-answer AI feedback still needs the server.</p>${records.map((r,i)=>`<section><h3>${escapeHtml(r.saved.courseName || r.courseId)} · ${escapeHtml(r.saved.moduleName || r.moduleId)}</h3>${Object.keys(r.saved.sets).map(mode=>`<button type="button" data-open-saved="${i}" data-saved-mode="${mode}">${mode==='mcq'?'Quiz':'Flashcards'}</button>`).join('')}</section>`).join('') || '<p>No saved sets yet.</p>'}`);
+  showResponse('Saved practice',`<p>Study content saved on this browser. No Canvas connection is needed to review it. Short-answer AI feedback still needs the server.</p>${records.map((r,i)=>`<section><h3>${escapeHtml(r.saved.courseName || r.courseId)} · ${escapeHtml(r.saved.moduleName || r.moduleId)}</h3>${Object.keys(r.saved.sets).map(mode=>`<button type="button" data-open-saved="${i}" data-saved-mode="${mode}">${mode==='mcq'?'Quiz':mode==='study' && r.saved.sets.study.result.guide?'Study guide':'Flashcards'}</button>`).join('')}</section>`).join('') || '<p>No saved sets yet.</p>'}`);
   responseBody.querySelectorAll('[data-open-saved]').forEach(button=>button.onclick=()=>{
     const r=records[Number(button.dataset.openSaved)],mode=button.dataset.savedMode,result=r.saved.sets[mode].result;
+    if(mode==='study' && result.guide){showResponse('Saved study guide',renderStudyGuide({id:r.courseId,name:r.saved.courseName},{id:r.moduleId,name:r.saved.moduleName},result));responseBody.querySelectorAll('[data-ai-tutor-mode],[data-open-module-chat]').forEach(el=>el.remove());return;}
     const entries=mode==='mcq' && r.saved.examModules?.length===result.mcq.length?result.mcq.map((item,i)=>({item,moduleId:r.saved.examModules[i]})):undefined;
     showResponse('Saved practice',`<p><strong>${escapeHtml(r.saved.moduleName || r.moduleId)}</strong> · ${escapeHtml(r.saved.courseName || r.courseId)}</p>`+renderPracticeSession({id:r.courseId,name:r.saved.courseName},{id:r.moduleId,name:r.saved.moduleName},result,mode,entries));bindPracticeSessions();
   });

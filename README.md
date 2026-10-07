@@ -641,3 +641,58 @@ intentionally to assert the new flip-card and scored-quiz behavior instead of
 quality across each type, AI grading accuracy and visual browser QA still require
 live verification. No dependencies, email/digest behavior or Phase 5 features were
 added.
+
+### Study guides and module conversations (Phase 5)
+
+The AI Tutor tab now opens a selected module's tutor workspace. Read and index
+the module first (Full or Quick), then ask a question or create a study guide.
+The guide has its own prompt and strict schema: overview, explained key concepts,
+key terms, worked examples from the sources, common mistakes, check-yourself
+questions with answers, and a suggested study order. Each entry includes its
+original source passage. Unsupported sections are explicitly empty rather than
+filled with invented examples. Guide generation traverses every available indexed
+concept in bounded calls, independently of the flashcard-count preference. Partial
+failures and cancellation keep completed sections and report missing coverage;
+a Quick or incomplete index is identified. Guides are saved with existing practice
+sets and can be reopened after refresh, including without Canvas authentication.
+
+Module chat uses `POST /api/ai-chat`. Shared `tutor-core.js` ranks indexed passages
+against the question using keyword relevance and BM25-style weighting. The browser
+sends up to eight whole passages (12,000 characters combined) and the last six
+conversation turns. Short follow-up questions also use recent student questions
+for retrieval. Answers must cite supplied evidence IDs; the server attaches the
+original text using the existing grounding validator. Unknown citations fail
+visibly. If the retrieved files cannot answer, the tutor says so explicitly. This
+version deliberately does not append general-knowledge answers. Retrieval searches
+the available index, so Quick/partial indexing and keyword mismatches can limit
+what the tutor finds.
+
+Choose **Just explain** or **Guide me with hints**. Hints mode asks a leading
+question without giving the final answer; use **Reveal answer** or explicitly ask
+for the answer when ready. Flashcards and quiz questions also provide **Explain
+this**, **Explain it more simply**, **Give me another example**, and **Quiz me on
+this**. These use only that item's original evidence and retain practice progress.
+Another-example requests explain source examples only; they do not invent an
+example and attribute it to a file. Exam items retain their original module scope.
+
+Chat requests are canceled when changing modules, leaving the view, changing
+teaching style, or pressing Cancel. Late replies cannot replace the current view.
+Conversations remain in tab memory, not localStorage. Requests use `store: false`
+and manually supplied recent history, following the Responses API's
+[conversation-state guidance](https://developers.openai.com/api/docs/guides/conversation-state).
+Provider timeouts, transient failures and unsupported structured-output formats
+use the existing bounded request pattern. API keys remain on the server.
+
+The unused offline module generators were removed: their file-title prompts,
+hard-coded definitions and placeholder distractors did not meet the same evidence
+requirements. Without an API key, saved practice and source reading still work;
+new AI guides, indexing and conversations clearly require server configuration.
+No new dependencies or email/digest changes were introduced.
+
+Phase 5 regression checks mock Canvas and model responses. They cover all seven
+cited guide sections, last-source coverage, partial results, guide reload and
+credential exclusion, relevant-passage ranking, unsupported questions, hints and
+reveal, all four item actions, quiz progress, cancellation, stale replies, provider
+errors and static delivery. The navigation test intentionally now expects the
+tutor module picker instead of the old generator-only panel. Live Canvas access,
+real model explanations/hint quality and visual browser QA remain unverified.

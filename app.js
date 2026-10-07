@@ -1094,7 +1094,7 @@ function renderCollaborationAndFuture(course) {
       <ul>
         <li>Assignment Breakdown: use Plan Assignment on any Canvas assignment.</li>
         <li>Grade Predictor: shown in the Dashboard tab.</li>
-        <li>AI Tutoring: upload downloaded files, then run AI Study Guide, AI Flashcards, or AI MCQ Quiz.</li>
+        <li>AI Tutoring: upload downloaded files, then run AI Study Guide, AI Flashcards, or AI Quiz.</li>
       </ul>
     </div>
   `;
@@ -1351,7 +1351,7 @@ async function generateModuleFlashcards(course, modules, moduleId) {
 let canvasReadingSession = 0;
 let moduleRequestVersion = 0;
 let currentModuleKey = "";
-function invalidateModuleRequests() { moduleRequestVersion++; currentModuleKey = ""; cancelAiGeneration(); }
+function invalidateModuleRequests() { moduleRequestVersion++; currentModuleKey = ""; cancelAiGeneration(); if(typeof cancelTutorChat==='function')cancelTutorChat(); }
 function moduleRequestCurrent(module) {
   return module.requestVersion === moduleRequestVersion && currentModuleKey === `${module.courseId}/${module.id}`;
 }
@@ -1359,6 +1359,7 @@ async function hydrateSelectedModule(course, modules, moduleId, title, {force = 
   const module = modules.find(item => String(item.id) === String(moduleId));
   if (!module || (module.courseId && String(module.courseId) !== String(course.id))) return null;
   cancelAiGeneration();
+  cancelTutorChat();
   const version = ++moduleRequestVersion;
   currentModuleKey = `${course.id}/${module.id}`;
   module.courseId = course.id;
@@ -1428,221 +1429,6 @@ function showUnreadableModule(course, module) {
   bindModuleNoteActions(course, module);
 }
 
-function renderModuleNotes(course, module, analysis = analyzeModule(module)) {
-  const keyItems = module.items.filter((item) => item.summary || item.title).slice(0, 6);
-  const stats = moduleSourceStats(module);
-  return `
-    <p><strong>${escapeHtml(module.name)}</strong> · ${escapeHtml(course.name)}</p>
-    <div class="course-scan">
-      <strong>Module scan</strong>
-      <span>${stats.total} item${stats.total === 1 ? "" : "s"} scanned · ${stats.readable} with readable Canvas content</span>
-    </div>
-    <div class="explain-box">
-      <p>${escapeHtml(analysis.overview)}</p>
-    </div>
-    <div class="coach-section">
-      <h3>Learning Goals</h3>
-      <ul>${analysis.learningGoals.map((goal) => `<li>${escapeHtml(goal)}</li>`).join("")}</ul>
-    </div>
-    <div class="coach-section">
-      <h3>Core Concepts</h3>
-      <div class="map">
-        ${analysis.concepts
-          .map(
-            (concept) => `
-              <div class="study-card">
-                <strong>${escapeHtml(concept.title)}</strong>
-                <span>${escapeHtml(concept.source)}</span>
-                <p>${escapeHtml(concept.explanation)}</p>
-              </div>
-            `,
-          )
-          .join("")}
-      </div>
-    </div>
-    <div class="coach-section">
-      <h3>Flashcards From Module Content</h3>
-      <div class="map">
-        ${
-          analysis.flashcards.length
-            ? analysis.flashcards
-                .map(
-                  (card) => `
-                    <div class="flashcard">
-                      <strong>Q: ${escapeHtml(card.question)}</strong>
-                      <span>A: ${escapeHtml(card.answer)}</span>
-                    </div>
-                  `,
-                )
-                .join("")
-            : "<p>No flashcards generated from readable module content.</p>"
-        }
-      </div>
-    </div>
-    <div class="coach-section">
-      <h3>Key Terms</h3>
-      <div class="map">
-        ${
-          analysis.keyTerms.length
-            ? analysis.keyTerms
-                .map(
-                  (term) => `
-                    <div class="flashcard">
-                      <strong>${escapeHtml(term.term)}</strong>
-                      <span>${escapeHtml(term.definition)}</span>
-                    </div>
-                  `,
-                )
-                .join("")
-            : "<p>No clear vocabulary terms found. Use the item titles as study anchors.</p>"
-        }
-      </div>
-    </div>
-    <div class="coach-section">
-      <h3>How To Study This Module</h3>
-      <ol>${analysis.studySteps.map((step) => `<li>${escapeHtml(step)}</li>`).join("")}</ol>
-    </div>
-    <div class="coach-section">
-      <h3>Coding Practice</h3>
-      <ol>${analysis.practiceTasks.map((task) => `<li>${escapeHtml(task)}</li>`).join("")}</ol>
-    </div>
-    <div class="coach-section">
-      <h3>Common Mistakes</h3>
-      <ul>${analysis.commonMistakes.map((mistake) => `<li>${escapeHtml(mistake)}</li>`).join("")}</ul>
-    </div>
-    <div class="coach-section">
-      <h3>Important Material</h3>
-      ${
-        keyItems.length
-          ? keyItems
-              .map(
-                (item) => `
-                  <div class="module-row">
-                    <strong>${escapeHtml(item.title)}</strong>
-                    <span>${escapeHtml(moduleItemLabel(item))}</span>
-                    ${item.summary ? `<p>${escapeHtml(shorten(item.summary, 150))}</p>` : ""}
-                    ${item.readDebug ? `<p>Canvas path: ${escapeHtml(item.readDebug)}</p>` : ""}
-                  </div>
-                `,
-              )
-              .join("")
-          : "<p>No readable module content found. Use the module item titles as your guide.</p>"
-      }
-    </div>
-    <div class="connect-actions">
-      <button class="primary-btn" type="button" id="module-note-again">Add Study Note</button>
-      <button type="button" id="module-quiz-from-notes">Make Quiz</button>
-    </div>
-    ${renderDownloadedFileImport("notes")}
-  `;
-}
-
-function renderModuleQuiz(course, module) {
-  const analysis = analyzeModule(module);
-  const questions = buildModuleMcqQuiz(module, analysis);
-  const stats = moduleSourceStats(module);
-  return `
-    <p><strong>${escapeHtml(module.name)}</strong> · ${escapeHtml(course.name)}</p>
-    <div class="course-scan">
-      <strong>Quiz source</strong>
-      <span>${stats.total} item${stats.total === 1 ? "" : "s"} scanned · ${stats.readable} with readable Canvas content</span>
-    </div>
-    <div class="coach-section">
-      <h3>Coding Self-Checks</h3>
-      <ol>${analysis.practiceTasks.map((task) => `<li>${escapeHtml(task)}</li>`).join("")}</ol>
-    </div>
-    <div class="coach-section">
-      <h3>Multiple Choice Questions</h3>
-      <div class="map">
-        ${
-          questions.length
-            ? questions
-                .map((question, index) => {
-                  const correctIndex = question.choices.findIndex((choice) => choice === question.answer);
-                  return `
-                    <div class="mcq-card">
-                      <strong>${index + 1}. ${escapeHtml(question.question)}</strong>
-                      <div class="mcq-choices">
-                        ${question.choices
-                          .map(
-                            (choice, choiceIndex) => `
-                              <span class="${choice === question.answer ? "is-correct" : ""}">
-                                ${String.fromCharCode(65 + choiceIndex)}. ${escapeHtml(choice)}
-                              </span>
-                            `,
-                          )
-                          .join("")}
-                      </div>
-                      <p>Source: ${escapeHtml(question.source || "")} · ${escapeHtml(question.section || "body")}</p><blockquote>${escapeHtml(question.evidence || "")}</blockquote>
-      <p class="mcq-answer">Correct: ${String.fromCharCode(65 + Math.max(correctIndex, 0))}. ${escapeHtml(question.answer)}</p>
-                      <p>${escapeHtml(question.explanation)}</p>
-                    </div>
-                  `;
-                })
-                .join("")
-            : `<div class="explain-box"><p>No real quiz questions were generated because Canvas did not expose readable text from this module yet. If the module uses PDFs, make sure Canvas allows the app to download them; scanned image PDFs may still need OCR.</p></div>`
-        }
-      </div>
-    </div>
-    <div class="coach-section">
-      <h3>What The App Could Read</h3>
-      <div class="map">${renderModuleSourceReport(module)}</div>
-    </div>
-    <div class="explain-box">
-      <p>${escapeHtml(analysis.studyPlan)}</p>
-    </div>
-    ${renderDownloadedFileImport("quiz")}
-  `;
-}
-
-function renderModuleFlashcards(course, module) {
-  const analysis = analyzeModule(module);
-  const stats = moduleSourceStats(module);
-  return `
-    <p><strong>${escapeHtml(module.name)}</strong> · ${escapeHtml(course.name)}</p>
-    <div class="course-scan">
-      <strong>Flashcard source</strong>
-      <span>${stats.total} item${stats.total === 1 ? "" : "s"} scanned · ${stats.readable} with readable Canvas content</span>
-    </div>
-    <div class="coach-section">
-      <h3>Flashcards From This Module</h3>
-      <div class="map">
-        ${
-          analysis.flashcards.length
-            ? analysis.flashcards
-                .map(
-                  (card, index) => `
-                    <div class="flashcard">
-                      <strong>${index + 1}. ${escapeHtml(card.question)}</strong>
-                      <span>${escapeHtml(card.answer)}</span>
-                    </div>
-                  `,
-                )
-                .join("")
-            : "<p>No flashcards generated from readable module content.</p>"
-        }
-      </div>
-    </div>
-    <div class="coach-section">
-      <h3>Use The Deck</h3>
-      <ol>
-        <li>Read the question side first and answer out loud.</li>
-        <li>Check the answer and mark any card you missed.</li>
-        <li>Retake only the missed cards until you can explain them without looking.</li>
-      </ol>
-    </div>
-    <div class="coach-section">
-      <h3>What The App Could Read</h3>
-      <div class="map">${renderModuleSourceReport(module)}</div>
-    </div>
-    <div class="connect-actions">
-      <button class="primary-btn" type="button" id="flashcards-to-quiz">Make MCQ Quiz</button>
-      <button type="button" id="flashcards-to-notes">Study Module</button>
-    </div>
-    ${renderDownloadedFileImport("flashcards")}
-  `;
-}
-
 function renderDownloadedFileImport(mode) {
   return `
     <div class="coach-section">
@@ -1660,7 +1446,7 @@ function renderDownloadedFileImport(mode) {
       <div class="ai-action-grid">
         <button type="button" data-ai-tutor-mode="study">AI Study Guide</button>
         <button type="button" data-ai-tutor-mode="flashcards">AI Flashcards</button>
-        <button type="button" data-ai-tutor-mode="mcq">AI MCQ Quiz</button>
+        <button type="button" data-ai-tutor-mode="mcq">AI Quiz</button>
       </div>
       <p>AI automatically reads this selected module before generating. Upload only if an automatic source is blocked or unreadable.</p>
     </div>
@@ -1698,16 +1484,8 @@ function bindModuleNoteActions(course, module) {
     }
   }));
   bindAiOptions(responseBody,module);
+  bindTutorGuideActions(course,module);
   bindAiPractice();
-  const noteButton = responseBody.querySelector("#module-note-again");
-  const quizButton = responseBody.querySelector("#module-quiz-from-notes");
-  const flashcardQuizButton = responseBody.querySelector("#flashcards-to-quiz");
-  const flashcardNotesButton = responseBody.querySelector("#flashcards-to-notes");
-
-  if (noteButton) noteButton.addEventListener("click", () => generateModuleNotes(course, [module], module.id));
-  if (quizButton) quizButton.addEventListener("click", () => generateModuleQuiz(course, [module], module.id));
-  if (flashcardQuizButton) flashcardQuizButton.addEventListener("click", () => generateModuleQuiz(course, [module], module.id));
-  if (flashcardNotesButton) flashcardNotesButton.addEventListener("click", () => generateModuleNotes(course, [module], module.id));
   responseBody.querySelectorAll("[data-module-file-import]").forEach((input) => {
     input.addEventListener("change", () => {
       const file = input.files?.[0];
@@ -1719,17 +1497,6 @@ function bindModuleNoteActions(course, module) {
   responseBody.querySelectorAll("[data-ai-tutor-mode]").forEach((button) => {
     button.addEventListener("click", () => runAiTutor(course, module, button.dataset.aiTutorMode || "study"));
   });
-}
-
-function summarizeModule(module) {
-  return analyzeModule(module).overview;
-}
-
-function moduleSourceStats(module) {
-  return {
-    total: module.items.filter(item => item.type !== "SubHeader").length,
-    readable: module.items.filter((item) => hasReadableStudyText(item)).length,
-  };
 }
 
 function moduleItemLabel(item) {
@@ -1748,286 +1515,6 @@ function moduleItemLabel(item) {
 
 function hasReadableStudyText(item) {
   return item.type !== 'SubHeader' && item.readable === true && !studyTextProblem(item.summary);
-}
-
-function analyzeModule(module) {
-  const readableItems = module.items.filter((item) => hasReadableStudyText(item));
-  const combinedText = readableItems
-    .map((item) => `${item.title}. ${cleanStudyText(item.summary || "")}`)
-    .join(" ");
-  const sentences = splitSentences(combinedText);
-  const facts = extractStudyFacts(module, readableItems);
-  const keyPoints = sentences
-    .filter((sentence) => sentence.length > 45)
-    .sort((left, right) => scoreSentence(right) - scoreSentence(left))
-    .slice(0, 8);
-  const concepts = buildConcepts(module, readableItems, keyPoints);
-  const keyTerms = extractKeyTerms(module, combinedText).slice(0, 10);
-  const flashcards = [
-    ...facts.slice(0, 8).map((fact) => ({
-      question: fact.question,
-      answer: fact.answer,
-    })),
-    ...keyTerms.slice(0, 6).map((term) => ({
-      question: `What does ${term.term} mean in this module?`,
-      answer: term.definition,
-    })),
-    ...concepts.slice(0, 4).map((concept) => ({
-      question: `Explain ${concept.title} without looking.`,
-      answer: concept.explanation,
-    })),
-    ...keyPoints.slice(0, 2).map((point) => ({
-      question: `Why does this matter: ${shorten(point, 58)}`,
-      answer: point,
-    })),
-  ].slice(0, 14);
-
-  const stats = moduleSourceStats(module);
-  const overview = keyPoints.length
-    ? `I studied ${stats.total} Canvas module item${stats.total === 1 ? "" : "s"} for ${module.name}. The strongest ideas are: ${keyPoints.slice(0, 3).join(" ")}`
-    : summarizeModuleFallback(module);
-  const learningGoals = buildLearningGoals(module, concepts, keyPoints);
-  const practiceTasks = buildCodingPractice(module, readableItems, concepts);
-  const commonMistakes = buildCommonMistakes(module, concepts);
-  const studySteps = buildModuleStudySteps(module, concepts);
-  const studyPlan = `Study this module actively: read the learning goals, explain each core concept, complete the coding self-checks, then answer the quiz without looking.`;
-
-  return {
-    overview,
-    keyPoints: keyPoints.length ? keyPoints : fallbackKeyPoints(module),
-    facts,
-    concepts,
-    learningGoals,
-    keyTerms,
-    flashcards,
-    practiceTasks,
-    commonMistakes,
-    studySteps,
-    studyPlan,
-  };
-}
-
-function buildModuleQuiz(module, analysis = analyzeModule(module)) {
-  const questions = [];
-
-  analysis.facts.slice(0, 8).forEach((fact) => {
-    questions.push({
-      question: fact.quizQuestion,
-      answer: fact.answer,
-    });
-  });
-
-  analysis.concepts.slice(0, 5).forEach((concept) => {
-    questions.push({
-      question: `Explain ${concept.title} using details from the module.`,
-      answer: concept.explanation,
-    });
-    questions.push({
-      question: `What would go wrong if you misunderstood ${concept.title}?`,
-      answer: `You may miss the purpose of ${concept.title} or apply it incorrectly in an assignment, code example, quiz, or discussion.`,
-    });
-  });
-
-  analysis.keyTerms.slice(0, 5).forEach((term) => {
-    questions.push({
-      question: `Define ${term.term} and give one example from the module.`,
-      answer: term.definition,
-    });
-  });
-
-  module.items
-    .filter((item) => item.type === "Assignment" || item.type === "Discussion" || item.type === "Quiz")
-    .slice(0, 3)
-    .forEach((item) => {
-      if (item.type === "Assignment") {
-        questions.push({
-          question: `What does ${item.title} ask you to do, and which module detail helps you complete it?`,
-          answer: item.summary ? shorten(item.summary, 180) : `Review ${item.title} and connect it to the strongest module facts.`,
-        });
-      }
-      if (item.type === "Discussion") {
-        questions.push({
-          question: `What claim would you make for ${item.title}, and which module evidence supports it?`,
-          answer: item.summary ? shorten(item.summary, 180) : `Use a specific module fact as evidence for your discussion post.`,
-        });
-      }
-      if (item.type === "Quiz") {
-        questions.push({
-          question: `What would you review before taking ${item.title}?`,
-          answer: item.summary ? shorten(item.summary, 180) : "Review the flashcards, key terms, and any module files connected to the quiz.",
-        });
-      }
-    });
-
-  questions.push({
-    question: `How does ${module.name} connect to an upcoming assignment or course goal?`,
-    answer: "Use the assignment list and module items to connect the module concepts to what you need to submit or practice.",
-  });
-  questions.push({
-    question: "Write one mini-program, query, or example that demonstrates the hardest concept in this module.",
-    answer: "Your example should have a clear input, process, and output, or a clear claim, evidence, and result.",
-  });
-  questions.push({
-    question: "What is one part of this module you still cannot explain clearly, and where would you look to fix it?",
-    answer: "Return to the exact Canvas page, file, notebook, or discussion item that introduced the unclear idea.",
-  });
-  return dedupeQuestions(questions).slice(0, 16);
-}
-
-function buildModuleMcqQuiz(module, analysis = analyzeModule(module)) {
-  if (!analysis.facts.length && !analysis.keyTerms.length && !analysis.concepts.length) return [];
-
-  const distractorPool = [
-    ...analysis.concepts.map((concept) => concept.explanation),
-    ...analysis.keyTerms.map((term) => term.definition),
-    ...analysis.facts.map((fact) => fact.answer),
-    ...analysis.keyPoints,
-    `Open ${module.name} and check the exact Canvas item before answering.`,
-    "Only memorize the title without connecting it to an example.",
-    "Skip the posted file and start the assignment from memory.",
-  ]
-    .map((choice) => cleanChoice(choice))
-    .filter(isGoodMcqChoice);
-
-  const questions = [];
-
-  analysis.facts.filter((fact) => isGoodMcqChoice(fact.answer)).slice(0, 10).forEach((fact, index) => {
-    questions.push(makeMcqQuestion({
-      question: fact.quizQuestion,
-      answer: fact.answer,
-      explanation: `This comes from ${fact.source}. Review that Canvas item again if this answer is not clear.`,
-      pool: distractorPool,
-      seed: index,
-    }));
-  });
-
-  analysis.keyTerms.slice(0, 6).forEach((term, index) => {
-    questions.push(makeMcqQuestion({
-      question: `Which answer best defines ${term.term} in this module?`,
-      answer: term.definition,
-      explanation: `${term.term} appears as a key term from the selected module content.`,
-      pool: distractorPool,
-      seed: index + 20,
-    }));
-  });
-
-  analysis.concepts.slice(0, 5).forEach((concept, index) => {
-    questions.push(makeMcqQuestion({
-      question: `Which statement best explains ${concept.title}?`,
-      answer: concept.explanation,
-      explanation: `This concept was pulled from ${concept.source}.`,
-      pool: distractorPool,
-      seed: index + 40,
-    }));
-  });
-
-  return dedupeMcqQuestions(questions).slice(0, 14);
-}
-
-function makeMcqQuestion({ question, answer, explanation, pool, seed = 0 }) {
-  const correct = cleanChoice(answer) || "Review the exact module content and explain it in your own words.";
-  const choices = [correct];
-  const normalizedCorrect = normalizeChoice(correct);
-
-  pool.forEach((candidate) => {
-    const cleaned = cleanChoice(candidate);
-    if (choices.length >= 4) return;
-    if (!isGoodMcqChoice(cleaned) || normalizeChoice(cleaned) === normalizedCorrect) return;
-    if (choices.some((choice) => normalizeChoice(choice) === normalizeChoice(cleaned))) return;
-    choices.push(cleaned);
-  });
-
-  const fallbacks = [
-    "This is mainly a due-date reminder, not a content idea from the module.",
-    "This answer is unrelated to the selected Canvas module.",
-    "This choice skips the example and only repeats the module title.",
-  ];
-
-  fallbacks.forEach((fallback) => {
-    if (choices.length < 4 && !choices.includes(fallback)) choices.push(fallback);
-  });
-
-  return {
-    question,
-    choices: rotateChoices(choices.slice(0, 4), seed),
-    answer: correct,
-    explanation,
-  };
-}
-
-function cleanChoice(choice) {
-  return shorten(cleanStudyText(choice), 155);
-}
-
-function isGoodMcqChoice(choice) {
-  const text = String(choice || "").trim();
-  if (text.length < 24) return false;
-  if (isLowValueStudySentence(text)) return false;
-  if (/https?:\/\//i.test(text)) return false;
-  if (/[\\^`{}[\]~|]{2,}/.test(text)) return false;
-  const letters = (text.match(/[a-zA-Z]/g) || []).length;
-  const symbols = (text.match(/[^a-zA-Z0-9\s.,;:()'"/-]/g) || []).length;
-  return letters >= 18 && symbols / Math.max(text.length, 1) < 0.08;
-}
-
-function normalizeChoice(choice) {
-  return String(choice || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-}
-
-function rotateChoices(choices, seed) {
-  if (!choices.length) return choices;
-  const offset = Math.abs(seed) % choices.length;
-  return [...choices.slice(offset), ...choices.slice(0, offset)];
-}
-
-function dedupeMcqQuestions(questions) {
-  const seen = new Set();
-  return questions.filter((question) => {
-    const key = question.question.toLowerCase();
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-}
-
-function extractStudyFacts(module, items) {
-  const facts = [];
-
-  items.filter((item) => hasReadableStudyText(item)).forEach((item) => {
-    const sentences = splitSentences(cleanStudyText(item.summary || ""))
-      .filter(isStrongStudySentence)
-      .slice(0, 8);
-
-    sentences.forEach((sentence) => {
-      const term = bestTermFromSentence(sentence) || cleanConceptTitle(item.title);
-      facts.push({
-        source: item.title,
-        question: `What should you remember from ${item.title}?`,
-        quizQuestion: buildFactQuestion(sentence, term, item),
-        answer: sentence,
-      });
-    });
-  });
-
-  if (facts.length) return facts.slice(0, 18);
-  return [];
-}
-
-function buildFactQuestion(sentence, term, item) {
-  const lower = sentence.toLowerCase();
-  if (/\b(because|therefore|so that|as a result)\b/.test(lower)) {
-    return `Why does this idea matter in ${item.title}: ${shorten(sentence, 90)}?`;
-  }
-  if (/\b(function|class|method|variable|loop|array|object|query|database|algorithm|model|notebook)\b/.test(lower)) {
-    return `How would you use or explain ${term} in code based on ${item.title}?`;
-  }
-  if (/\b(compare|difference|versus|unlike|similar)\b/.test(lower)) {
-    return `What comparison is being made in ${item.title}?`;
-  }
-  if (/\b(define|means|refers to|is a|are a)\b/.test(lower)) {
-    return `What does ${term} mean according to ${item.title}?`;
-  }
-  return `Which statement best explains ${term} from ${item.title}?`;
 }
 
 function isStrongStudySentence(sentence) {
@@ -2055,140 +1542,8 @@ function isLowValueStudySentence(sentence) {
   );
 }
 
-function bestTermFromSentence(sentence) {
-  const phrase = importantPhraseFromSentence(sentence);
-  if (phrase) return phrase;
-
-  const words = sentence
-    .replace(/[^a-zA-Z0-9_\s-]/g, " ")
-    .split(/\s+/)
-    .filter((word) => word.length > 4)
-    .filter((word) => !["about", "because", "should", "would", "could", "their", "there", "where", "which", "these", "those", "module"].includes(word.toLowerCase()));
-
-  return words[0] || "";
-}
-
-function importantPhraseFromSentence(sentence) {
-  const text = String(sentence || "");
-  const phrases = [
-    "Artificial Intelligence",
-    "Machine Learning",
-    "Deep Learning",
-    "Data Science",
-    "Big Data",
-    "Exploratory Data Analysis",
-    "Supervised Learning",
-    "Unsupervised Learning",
-    "Linear Regression",
-    "Gradient Descent",
-    "Probability Theory",
-    "Statistics",
-    "Volume",
-    "Velocity",
-    "Variety",
-    "Complexity",
-  ];
-  return phrases.find((phrase) => new RegExp(`\\b${phrase.replace(/\s+/g, "\\s+")}\\b`, "i").test(text)) || "";
-}
-
-function dedupeQuestions(questions) {
-  const seen = new Set();
-  return questions.filter((question) => {
-    const key = question.question.toLowerCase();
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-}
-
-function buildConcepts(module, items, keyPoints) {
-  const conceptItems = items
-    .filter((item) => item.summary && item.summary.length > 30)
-    .slice(0, 8)
-    .map((item) => ({
-      title: cleanConceptTitle(item.title),
-      source: moduleItemLabel(item),
-      explanation: firstUsefulSentence(item.summary) || shorten(item.summary, 180),
-    }));
-
-  if (conceptItems.length) return conceptItems;
-
-  return keyPoints.slice(0, 5).map((point, index) => ({
-    title: `Concept ${index + 1}`,
-    source: module.name,
-    explanation: point,
-  }));
-}
-
-function buildLearningGoals(module, concepts, keyPoints) {
-  const goals = concepts.slice(0, 4).map((concept) => `Understand ${concept.title} well enough to explain it and use it in a small example.`);
-  goals.push(`Connect ${module.name} to at least one assignment, quiz, or coding task.`);
-  goals.push("Identify what you still cannot explain without notes.");
-  return goals.slice(0, 6);
-}
-
-function buildCodingPractice(module, items, concepts) {
-  const hasCode = items.some((item) => item.sourceKind === "code" || item.sourceKind === "notebook" || item.sourceKind === "zip" || /code|function|class|python|java|javascript|sql|notebook/i.test(`${item.title} ${item.summary}`));
-  const firstConcept = concepts[0]?.title || module.name;
-
-  if (hasCode) {
-    return [
-      `Recreate the smallest working example related to ${firstConcept} without copying.`,
-      "Add comments explaining each important line in your own words.",
-      "Change one input or parameter and predict the output before running it.",
-      "Write one possible bug and explain how you would debug it.",
-      "Summarize the code flow: input, processing, output.",
-    ];
-  }
-
-  return [
-    `Create a simple example that demonstrates ${firstConcept}.`,
-    "Turn one key point into a practice problem.",
-    "Explain the module to someone else in three minutes.",
-    "Make one flashcard for each key term.",
-  ];
-}
-
-function buildCommonMistakes(module, concepts) {
-  return [
-    "Rereading the module without testing yourself.",
-    `Knowing the words from ${module.name} but not being able to use them in an example.`,
-    concepts[0] ? `Skipping the details around ${concepts[0].title}.` : "Skipping the hardest item in the module.",
-    "Starting the assignment before checking the related module item or posted note.",
-    "Not writing down what you still do not understand.",
-  ];
-}
-
-function buildModuleStudySteps(module, concepts) {
-  return [
-    `Read the module overview and identify the purpose of ${module.name}.`,
-    `Study the first concept: ${concepts[0]?.title || "the main module idea"}.`,
-    "Use the flashcards without looking at the answers.",
-    "Do the coding self-checks or make a small example.",
-    "Take the practice quiz and revisit anything you miss.",
-  ];
-}
-
-function cleanConceptTitle(title) {
-  return title
-    .replace(/\.(ipynb|py|js|ts|java|cpp|c|csv|txt|md|html)$/i, "")
-    .replace(/[_-]+/g, " ")
-    .trim() || "Core concept";
-}
-
 function firstUsefulSentence(text) {
   return splitSentences(cleanStudyText(text)).find(isStrongStudySentence) || "";
-}
-
-function summarizeModuleFallback(module) {
-  const titles = module.items.slice(0, 5).map((item) => item.title).join(", ");
-  return titles
-    ? `I scanned the Canvas module item list for ${module.name}, but Canvas did not expose much readable body text for this module. Start with these items: ${titles}.`
-    : `This module focuses on ${module.name}. Canvas did not expose detailed content, so start by opening the module in Canvas.`;
-}
-
-function fallbackKeyPoints(module) {
-  return module.items.slice(0, 5).map((item) => `Review ${item.title} and identify the main idea.`);
 }
 
 function splitSentences(text) {
@@ -2208,80 +1563,6 @@ function cleanStudyText(text) {
     .replace(/[^\x09\x0a\x0d\x20-\x7e]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
-}
-
-function scoreSentence(sentence) {
-  const lower = sentence.toLowerCase();
-  let score = Math.min(sentence.length / 40, 5);
-  ["important", "because", "must", "should", "key", "explain", "compare", "analyze", "create"].forEach((word) => {
-    if (lower.includes(word)) score += 2;
-  });
-  return score;
-}
-
-function extractKeyTerms(module, text) {
-  const knownTerms = [
-    "Artificial Intelligence",
-    "Machine Learning",
-    "Deep Learning",
-    "Data Science",
-    "Big Data",
-    "Exploratory Data Analysis",
-    "Supervised Learning",
-    "Unsupervised Learning",
-    "Linear Regression",
-    "Gradient Descent",
-    "Probability Theory",
-    "Statistics",
-    "Volume",
-    "Velocity",
-    "Variety",
-    "Complexity",
-  ].filter((term) => new RegExp(`\\b${term.replace(/\s+/g, "\\s+")}\\b`, "i").test(text));
-  const candidates = [...new Set(
-    cleanStudyText(text)
-      .replace(/[^a-zA-Z0-9\s-]/g, " ")
-      .split(/\s+/)
-      .filter((word) => word.length > 5)
-      .filter((word) => !["module", "assignment", "students", "should", "because", "through", "course", "canvas", "please"].includes(word.toLowerCase())),
-  )];
-  const sentences = splitSentences(text);
-
-  return [...new Set([...knownTerms, ...candidates])].slice(0, 12).map((term) => {
-    const definitionSource = sentences.find((sentence) => sentence.toLowerCase().includes(term.toLowerCase()));
-    const knownDefinition = knownTermDefinition(term);
-    return {
-      term,
-      definition:
-        knownDefinition ||
-        (definitionSource && isStrongStudySentence(definitionSource)
-          ? shorten(definitionSource, 150)
-          : `A key idea from ${module.name}. Find it in the module material and connect it to an example.`),
-    };
-  });
-}
-
-function knownTermDefinition(term) {
-  const key = String(term || "").toLowerCase();
-  const definitions = {
-    "artificial intelligence": "Artificial intelligence is the broader field of building systems that perform tasks requiring human-like reasoning, perception, or decision-making.",
-    "machine learning": "Machine learning is a branch of AI where models learn patterns from data instead of being programmed with every rule by hand.",
-    "deep learning": "Deep learning uses multi-layer neural networks to learn complex patterns from large amounts of data.",
-    "data science": "Data science combines statistics, computing, and domain knowledge to collect, analyze, and explain data for decisions.",
-    "big data": "Big data refers to data that is large, fast, varied, or complex enough that traditional tools are difficult to use effectively.",
-    "exploratory data analysis": "Exploratory data analysis is the process of summarizing and visualizing data to find patterns, outliers, and relationships before modeling.",
-    "supervised learning": "Supervised learning trains a model using labeled examples where the correct output is already known.",
-    "unsupervised learning": "Unsupervised learning finds patterns or groups in data without labeled answers.",
-    "linear regression": "Linear regression models the relationship between input variables and a numeric output using a best-fit line or equation.",
-    "gradient descent": "Gradient descent is an optimization method that repeatedly adjusts model parameters to reduce error.",
-    "probability theory": "Probability theory studies uncertainty and the likelihood of events.",
-    statistics: "Statistics uses data collection, summaries, inference, and probability to understand variation and support decisions.",
-    volume: "Volume describes the size or amount of data.",
-    velocity: "Velocity describes how quickly data is generated, received, or processed.",
-    variety: "Variety describes the different formats, sources, and structures of data.",
-    complexity: "Complexity describes how difficult data is to manage, combine, clean, or extract value from.",
-  };
-  return definitions[key] || "";
 }
 
 async function planAssignment(course, assignments, modules, postedNotes, assignmentId) {
@@ -3017,7 +2298,7 @@ function renderFileImportNotice(item, readableCharacters, reason) {
       <p>${escapeHtml(item.title)} · ${escapeHtml(moduleItemLabel(item))} · ${readableCharacters.toLocaleString()} readable characters</p>
       ${
         readable
-          ? "<p>You can now use AI Study Guide, AI Flashcards, or AI MCQ Quiz from this uploaded content.</p>"
+          ? "<p>You can now use AI Study Guide, AI Flashcards, or AI Quiz from this uploaded content.</p>"
           : `<p>${escapeHtml(reason || "Try a text-based PDF, DOCX, PPTX, notebook, source code file, or ZIP with readable files inside.")}</p>`
       }
     </div>
@@ -3259,14 +2540,14 @@ async function generateAiBatches(payload, {signal, onProgress = () => {}} = {}) 
   return result;
 }
 async function runAiTutor(course, module, mode, {indexMode, allowPartial = false, retryPart} = {}) {
-  const options = selectedAiOptions(mode);
+  const options = ['study','chat'].includes(mode) ? readAiOptions() : selectedAiOptions(mode);
   if (!options) return;
   invalidateModuleRequests();
   const startingVersion = moduleRequestVersion;
   try {
     const status = await fetchAiStatus();
     if (startingVersion !== moduleRequestVersion) return;
-    if (!status.configured) throw Error('AI is not configured. Add OPENAI_API_KEY privately to the server .env and restart before generating.');
+    if (!status.configured) throw Error('AI is not configured. Saved practice and module source reading still work. Add OPENAI_API_KEY privately to the server .env and restart to generate new material.');
   } catch (error) {
     if (startingVersion === moduleRequestVersion) {
       showResponse('AI unavailable', `<p role="alert">${escapeHtml(error.message)}</p>` + renderAiOptions() + '<button type="button" data-ai-tutor-mode="'+mode+'">Try again</button>');
@@ -3301,8 +2582,9 @@ async function runAiTutor(course, module, mode, {indexMode, allowPartial = false
       showResponse('Module indexing',`<p role="${controller.signal.aborted?'alert':'status'}">${controller.signal.aborted?'Indexing canceled. Completed parts were kept.':module.index.concepts.length?'Some parts were not indexed. Retry them or generate from the available concepts.':'No supported concepts are available yet. Retry a failed part or re-read the module.'}</p>`+renderModuleIndex(module.index)+renderAiOptions()+moduleCoverage(module));
       bindModuleNoteActions(course,module);bindModuleIndex(course,module,mode);return;
     }
+    if(mode==='chat'){showModuleTutor(course,module);return;}
     const payload = {...buildAiTutorPayload(course, module, mode), ...options};
-    showResponse('Creating your practice', `<p id="generation-progress" role="status">Creating ${options.count} ${mode === 'mcq' ? 'quiz questions' : 'flashcards'}…</p><button id="cancel-generation" type="button">Cancel generation</button>` + moduleCoverage(module, {allowReread:false}));
+    showResponse('Creating your practice', `<p id="generation-progress" role="status">${mode==='study'?'Creating a study guide across the module index':`Creating ${options.count} ${mode === 'mcq' ? 'quiz questions' : 'flashcards'}`}…</p><button id="cancel-generation" type="button">Cancel generation</button>` + moduleCoverage(module, {allowReread:false}));
     responseBody.querySelector('#cancel-generation').addEventListener('click', cancelAiGeneration);
     const started = Date.now();
     let progress = `Made 0 of ${options.count}.`;
@@ -3311,18 +2593,18 @@ async function runAiTutor(course, module, mode, {indexMode, allowPartial = false
       if (status && current()) status.textContent = `${progress} ${Math.floor((Date.now() - started) / 1000)} seconds elapsed. You can cancel below.`;
     };
     progressTimer = setInterval(updateProgress, 1000);
-    const result = await generateAiBatches(payload, {signal:controller.signal, onProgress:(made,batch,topUp) => {
-      progress = `Made ${made} of ${options.count}. ${topUp ? 'Topping up' : 'Generating'} batch ${batch}…`; updateProgress();
+    const result = await (mode==='study'?generateStudyGuide:generateAiBatches)(payload, {signal:controller.signal, onProgress:(made,batch,topUp) => {
+      progress = mode==='study'?`Creating study guide part ${batch}; ${made} concepts covered so far…`:`Made ${made} of ${options.count}. ${topUp ? 'Topping up' : 'Generating'} batch ${batch}…`; updateProgress();
     }});
     if (version !== moduleRequestVersion || !moduleRequestCurrent(module)) return;
     if (result.madeCount) {
-      assertAiPracticeResult(result, mode);
+      if(mode==='study')assertStudyGuide(result);else assertAiPracticeResult(result, mode);
       module.generated ||= {};
       const at=saveGeneratedPractice(course,module,mode,result);
       module.generated[mode] = {result, at};
       if (mode === 'study') {
         const note = { id: `module-note-${course.id}-${module.id}`, title: `Notes: ${module.name}`, topic: course.name, color: 'yellow', x: 20, y: 20,
-          content: [...(result.keyPoints || []).map(point => point.text), ...result.flashcards.map(card => `${card.front} ${card.back}`)].join('\n\n') };
+          content: Object.entries(result.guide).flatMap(([key,items])=>items.map(item=>`${TutorCore.sections[key]} — ${item.title}: ${item.text} (Source: ${item.source}, ${item.section})`)).join('\n\n') };
         notes = [...notes.filter(item => item.id !== note.id), note]; selectedId = note.id; render();
       }
     }
@@ -3340,19 +2622,11 @@ function buildAiTutorPayload(course, module, mode) {
     studyText: sources.map(item => `SOURCE ID: ${item.id}\nSOURCE: ${item.title}\n${item.text}`).join('\n\n---\n\n'), canvasContext: '' };
 }
 
-function extractUsableStudyText(text) {
-  const sentences = splitSentences(text).filter(isStrongStudySentence);
-  if (sentences.length) return sentences.slice(0, 80).join(" ");
-
-  const cleaned = cleanStudyText(text);
-  if (cleaned.length < 35 || isLowValueStudySentence(cleaned)) return "";
-  return cleaned.slice(0, 12000);
-}
-
 function aiSourceCitation(item) {
   return `<details class="source-citation"><summary>Source · ${escapeHtml(item.section || 'body')}</summary><p>${escapeHtml(item.source)}</p><blockquote>${escapeHtml(item.evidence)}</blockquote></details>`;
 }
 function renderAiTutorResult(course, module, result, mode) {
+  if(mode==='study' && result.guide)return renderStudyGuide(course,module,result);
   const cards = result.flashcards || [], questions = result.mcq || [];
   return `<p><strong>${escapeHtml(module.name)}</strong> · ${escapeHtml(course.name)}</p>
     ${result.coverage ? `<p class="generation-coverage" role="status">${result.coverage.items} ${mode==='mcq'?'questions':'cards'} from ${result.coverage.sourcesUsed} of ${result.coverage.totalSources} readable sources. ${result.coverage.conceptsAvailable} concepts available. ${result.coverage.partsIndexed} of ${result.coverage.totalParts} indexing parts complete${result.coverage.mode==='quick'?' · Quick sample':''}.</p>` : ''}

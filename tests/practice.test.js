@@ -28,7 +28,7 @@ function card(type='why_how') {return {...cite,type,difficulty:'easy',front:type
 function browser(fetchImpl=async()=>({ok:true,json:async()=>({configured:true,model:'fixture'})})) {
  const dom=new JSDOM(fs.readFileSync(path.join(root,'index.html'),'utf8'),{url:'http://127.0.0.1:4177',runScripts:'outside-only',pretendToBeVisual:true});
  dom.window.fetch=fetchImpl;
- dom.window.eval(['source-quality.js','source-index.js','practice-core.js','app.js','practice-ui.js'].map(f=>fs.readFileSync(path.join(root,f),'utf8')).join('\n')+'\nwindow.setTestToken = value => {canvasConnection.token=value;};');
+ dom.window.eval(['source-quality.js','source-index.js','tutor-core.js','practice-core.js','app.js','practice-ui.js','tutor-ui.js'].map(f=>fs.readFileSync(path.join(root,f),'utf8')).join('\n')+'\nwindow.setTestToken = value => {canvasConnection.token=value;};');
  return dom;
 }
 const course={id:42,name:'Statistics'},moduleInfo={id:7,name:'Means'};

@@ -85,6 +85,7 @@ async function renderCourseTab(context, tab) {
   if (!notes.some(note => note.id === focusNote.id)) notes.push(focusNote);
   selectedId = focusNote.id;
   render();
+  if(tab==='ai-tutor'){renderTutorTab(context);return;}
   if (tab === 'overview') {
     showResponse('Course overview', renderLearningDashboard(course, assignments, modules, postedNotes, estimateCourseScore(assignments), readCourseGoal(course.id)) + courseWeakSpots(course,modules));
     bindCourseWeakSpots(course,modules);

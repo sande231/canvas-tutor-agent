@@ -66,7 +66,7 @@ function browser(fetchImpl,count=20) {
   if(url==='/api/ai-index')return {ok:true,json:async()=>({concepts:fixtureConcepts(JSON.parse(options.body).passages)})};
   return fetchImpl(url,options);
  };
- dom.window.eval(['source-quality.js','source-index.js','practice-core.js','app.js','practice-ui.js'].map(name=>fs.readFileSync(path.join(root,name),'utf8')).join('\n'));
+ dom.window.eval(['source-quality.js','source-index.js','tutor-core.js','practice-core.js','app.js','practice-ui.js','tutor-ui.js'].map(name=>fs.readFileSync(path.join(root,name),'utf8')).join('\n'));
  return dom;
 }
 function grounded(start,count,mode='mcq') {
