@@ -591,8 +591,8 @@ async function hydrateModuleItem(courseId, moduleName, item, context = {}) {
       if (!baseItem.contentId) throw Error("Canvas did not supply a file ID. Open the file in Canvas or upload an accessible copy.");
       result = await readFile(baseItem.contentId);
     } else if (baseItem.type === "ExternalUrl") {
-      const response = await fetch('/api/external-text', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({url: baseItem.externalUrl || baseItem.htmlUrl}) });
-      result = await response.json();
+      const response = await fetch('/api/external-text', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({url: baseItem.externalUrl || baseItem.htmlUrl,stream:true}) });
+      result = await readFileResponse(response,context.onProgress);
       if (!response.ok) throw Error('External source reader unavailable. Try again or upload an accessible copy.');
     } else {
       let apiPath, field;
@@ -689,76 +689,7 @@ function safeCanvasPath(url) {
   }
 }
 
-async function fetchModulePageBody(courseId, baseItem, apiPath) {
-  const pageSlugs = uniqueValues([
-    baseItem.pageUrl,
-    pageSlugFromApiPath(apiPath),
-    pageSlugFromCanvasUrl(baseItem.htmlUrl),
-  ]);
-  const debugPaths = [];
 
-  for (const slug of pageSlugs) {
-    const result = await fetchCanvasPageBySlug(courseId, slug);
-    debugPaths.push(result.debug);
-    if (result.summary) return result;
-  }
-
-  if (apiPath) {
-    try {
-      debugPaths.push(apiPath);
-      const itemDetail = await canvasApiFetch(canvasConnection.baseUrl, canvasConnection.token, apiPath);
-      const detailSlugs = uniqueValues([
-        itemDetail.page_url,
-        pageSlugFromApiPath(itemDetail.url),
-        itemDetail.content_details?.page_url,
-        pageSlugFromCanvasUrl(itemDetail.html_url || itemDetail.external_url || ""),
-      ]);
-
-      if (itemDetail.body) {
-        return {
-          title: itemDetail.title || baseItem.title,
-          summary: stripHtml(itemDetail.body || ""),
-          debug: apiPath,
-        };
-      }
-
-      for (const slug of detailSlugs) {
-        const result = await fetchCanvasPageBySlug(courseId, slug);
-        debugPaths.push(result.debug);
-        if (result.summary) return result;
-      }
-    } catch {
-      return {
-        title: baseItem.title,
-        summary: "",
-        debug: debugPaths.filter(Boolean).join(" | ") || apiPath,
-      };
-    }
-  }
-
-  return {
-    title: baseItem.title,
-    summary: "",
-    debug: debugPaths.filter(Boolean).join(" | "),
-  };
-}
-
-async function fetchCanvasPageBySlug(courseId, slug) {
-  const pageSlug = String(slug || "").trim();
-  if (!pageSlug) return { title: "", summary: "", debug: "" };
-
-  const apiPath = `/api/v1/courses/${courseId}/pages/${encodeURIComponent(pageSlug)}`;
-  try {
-    const page = await canvasApiFetch(canvasConnection.baseUrl, canvasConnection.token, apiPath);
-    return {
-      title: page.title || "",
-      summary: stripHtml(page.body || ""),
-      debug: apiPath,
-    };
-  } catch {
-    return { title: "", summary: "", debug: apiPath };
-  }
-}
 
 function pageSlugFromApiPath(apiPath) {
   const match = String(apiPath || "").match(/\/pages\/([^/?#]+)/);
@@ -1094,7 +1025,7 @@ function renderCollaborationAndFuture(course) {
       <ul>
         <li>Assignment Breakdown: use Plan Assignment on any Canvas assignment.</li>
         <li>Grade Predictor: shown in the Dashboard tab.</li>
-        <li>AI Tutoring: upload downloaded files, then run AI Study Guide, AI Flashcards, or AI Quiz.</li>
+        <li>AI Tutoring: select a module to read its sources, create a study guide, ask questions, or practise cards and quizzes.</li>
       </ul>
     </div>
   `;
@@ -1254,7 +1185,7 @@ function detectConceptGaps(assignments, modules, postedNotes) {
     .map((module) => ({
       title: module.name,
       reason: "Module material needs review",
-      action: "Download the module files, upload them to the tutor, then generate AI flashcards.",
+      action: "Open this module, read and index its sources, then generate flashcards.",
     }));
 
   const announcementGap = postedNotes.length
@@ -1280,7 +1211,7 @@ function buildStudyPlanner(assignments, modules) {
   const moduleTasks = modules.slice(0, 3).map((module) => ({
     title: `Review ${module.name}`,
     time: "25 min",
-    action: "Download the key file, upload it to Canvas Tutor, make flashcards, then answer one MCQ set.",
+    action: "Read and index this module, review flashcards, then practise a quiz.",
   }));
 
   return [...assignmentTasks, ...moduleTasks].slice(0, 7);
@@ -1373,9 +1304,10 @@ async function hydrateSelectedModule(course, modules, moduleId, title, {force = 
     const isCurrent = () => version === moduleRequestVersion && session === canvasReadingSession;
     if (!isCurrent()) return null;
     const fileReads = new Map();
-    const context = {isCurrent, readFile:id => {
+    const onProgress=message=>{if(!isCurrent())return;const progress=responseBody.querySelector('#reading-progress');if(progress)progress.textContent=message;};
+    const context = {isCurrent, onProgress, readFile:id => {
       const key = String(id).replace(/^0+(?=\d)/,'');
-      if (!fileReads.has(key)) fileReads.set(key, canvasFileTextFetch(canvasConnection.baseUrl,canvasConnection.token,key));
+      if (!fileReads.has(key)) fileReads.set(key, canvasFileTextFetch(canvasConnection.baseUrl,canvasConnection.token,key,"",onProgress));
       return fileReads.get(key);
     }};
     const results = new Array(rawItems.length);
@@ -1435,7 +1367,7 @@ function renderDownloadedFileImport(mode) {
       <h3>Optional fallback: upload an accessible copy</h3>
       <div class="file-import-row">
         <label for="downloaded-module-file-${mode}">Choose Canvas file from Downloads</label>
-        <input type="file" id="downloaded-module-file-${mode}" data-module-file-import="${mode}" accept=".pdf,.zip,.ipynb,.pynb,.txt,.md,.csv,.json,.py,.js,.ts,.java,.c,.cpp,.docx,.pptx,image/*,application/pdf,application/zip">
+        <input type="file" id="downloaded-module-file-${mode}" data-module-file-import="${mode}" accept=".pdf,.zip,.ipynb,.pynb,.txt,.md,.csv,.json,.py,.js,.ts,.java,.c,.cpp,.doc,.docx,.rtf,.odt,.ppt,.pptx,.odp,.xls,.xlsx,.ods,image/*,application/pdf,application/zip">
         <span data-file-import-status>Waiting for a downloaded Canvas file.</span>
       </div>
       <p>Use this when Canvas lets you download the file in your browser but the API does not expose the file id to the tutor.</p>
@@ -1458,9 +1390,12 @@ function sourceReadingDetails(item) {
   const parts = [`${reading?.characters ?? (item.summary || item.text || '').length} characters extracted`];
   if (reading?.pagesRead !== undefined) parts.push(`${reading.pagesRead} of ${reading.totalPages} pages read`);
   else if (reading?.slidesRead !== undefined) parts.push(`${reading.slidesRead} of ${reading.totalSlides ?? 'unknown'} slides read`);
+  else if (reading?.sheetsRead !== undefined) parts.push(`${reading.sheetsRead} of ${reading.totalSheets} sheets read · ${reading.cellsRead} cells extracted`);
   else if (reading?.cellsRead !== undefined) parts.push(`${reading.cellsRead} of ${reading.totalCells} cells read`);
   else if (reading?.filesRead !== undefined) parts.push(`${reading.filesRead} of ${reading.totalFiles} supported archive files attempted`);
   else parts.push('Page/slide count not available for this source');
+  if (reading?.ocrPagesAttempted) parts.push(`OCR: ${reading.ocrPagesRead} pages/slides yielded text of ${reading.ocrPagesAttempted} attempted`);
+  if (reading?.partial) parts.push('Partial extraction: some content could not be read');
   if (reading?.issues?.length) parts.push(`Unreadable entries: ${reading.issues.join('; ')}`);
   if (reading?.truncated) parts.push(`Safety limit — partial extraction: ${(reading.limits || []).join('; ')}`);
   else parts.push(reading && reading.coverageKnown !== false ? 'No extraction safety limit reached' : 'Extraction coverage unavailable');
@@ -2216,7 +2151,19 @@ async function canvasProxyFetch(baseUrl, token, path) {
   return payload;
 }
 
-async function canvasFileTextFetch(baseUrl, token, fileId, apiPath = "") {
+async function readFileResponse(response,onProgress=()=>{}) {
+  if(!response.headers?.get('content-type')?.includes('application/x-ndjson'))return response.json();
+  const reader=response.body.getReader(),decoder=new TextDecoder();let pending='',result,finished=false;
+  const line=value=>{if(!value.trim())return;const message=JSON.parse(value);if(typeof message.progress==='string')onProgress?.(message.progress);if(Object.hasOwn(message,'result')){result=message.result;finished=true;if(message.status===401)throw stopCanvasOnUnauthorized(result.authReason);}};
+  try {
+    while(true){const {value,done}=await reader.read();pending+=decoder.decode(value || new Uint8Array(),{stream:!done});let newline;while((newline=pending.indexOf('\n'))>=0){line(pending.slice(0,newline));pending=pending.slice(newline+1);}if(done)break;}
+    if(pending.trim())line(pending);
+    if(!finished)throw Error('File reading stopped before completion. Re-read this module.');
+    return result;
+  }finally{reader.releaseLock();}
+}
+
+async function canvasFileTextFetch(baseUrl, token, fileId, apiPath = "", onProgress) {
   if (canvasAuthFailure) throw canvasAuthFailure;
   if (!isLocalHttp()) {
     return {
@@ -2232,9 +2179,9 @@ async function canvasFileTextFetch(baseUrl, token, fileId, apiPath = "") {
     headers: {
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ baseUrl, token, fileId, apiPath }),
+    body: JSON.stringify({ baseUrl, token, fileId, apiPath, stream:true }),
   });
-  const payload = await response.json().catch(() => ({}));
+  const payload = await readFileResponse(response,onProgress);
 
   if (response.status === 401) throw stopCanvasOnUnauthorized(payload.authReason);
   if (!response.ok) {
@@ -2253,13 +2200,12 @@ async function importDownloadedModuleFile(course, module, file, mode) {
   const requestVersion = moduleRequestVersion;
   showResponse(
     "Reading Downloaded File",
-    `<p>Reading <strong>${escapeHtml(file.name)}</strong> and adding it to <strong>${escapeHtml(module.name)}</strong>.</p>`,
+    `<p id="reading-progress" role="status">Reading <strong>${escapeHtml(file.name)}</strong> and adding it to <strong>${escapeHtml(module.name)}</strong>.</p>`,
   );
 
   try {
-    const payload = await localFileTextFetch(file);
+    const payload = await localFileTextFetch(file,message=>{if(requestVersion!==moduleRequestVersion)return;const progress=responseBody.querySelector("#reading-progress");if(progress)progress.textContent=message;});
     if (requestVersion !== moduleRequestVersion) return;
-    const readableCharacters = payload.readable ? String(payload.text || "").length : 0;
     const importedItem = {
       id: `local-file-${Date.now()}`,
       title: payload.title || file.name,
@@ -2283,6 +2229,7 @@ async function importDownloadedModuleFile(course, module, file, mode) {
     await runAiTutor(course, module, mode === 'quiz' ? 'mcq' : mode === 'notes' ? 'study' : mode);
 
   } catch (error) {
+    if(requestVersion!==moduleRequestVersion)return;
     showResponse(
       "Downloaded File Failed",
       `<p>${escapeHtml(error.message || "The tutor could not read this downloaded file.")}</p>`,
@@ -2290,22 +2237,7 @@ async function importDownloadedModuleFile(course, module, file, mode) {
   }
 }
 
-function renderFileImportNotice(item, readableCharacters, reason) {
-  const readable = item.readable && readableCharacters > 0;
-  return `
-    <div class="explain-box">
-      <p><strong>${readable ? "File uploaded and read." : "File uploaded, but no readable study text was found."}</strong></p>
-      <p>${escapeHtml(item.title)} · ${escapeHtml(moduleItemLabel(item))} · ${readableCharacters.toLocaleString()} readable characters</p>
-      ${
-        readable
-          ? "<p>You can now use AI Study Guide, AI Flashcards, or AI Quiz from this uploaded content.</p>"
-          : `<p>${escapeHtml(reason || "Try a text-based PDF, DOCX, PPTX, notebook, source code file, or ZIP with readable files inside.")}</p>`
-      }
-    </div>
-  `;
-}
-
-async function localFileTextFetch(file) {
+async function localFileTextFetch(file,onProgress) {
   const dataBase64 = await fileToBase64(file);
   const response = await fetch("/api/local-file-text", {
     method: "POST",
@@ -2315,10 +2247,10 @@ async function localFileTextFetch(file) {
     body: JSON.stringify({
       title: file.name,
       contentType: file.type,
-      dataBase64,
+      dataBase64, stream:true,
     }),
   });
-  const payload = await response.json().catch(() => ({}));
+  const payload = await readFileResponse(response,onProgress);
 
   if (!response.ok) {
     throw new Error(payload.error || "The local file reader could not complete the request.");
@@ -2635,36 +2567,14 @@ function renderAiTutorResult(course, module, result, mode) {
     ${cards.length || questions.length ? renderPracticeSession(course,module,result,mode) : '<p>No practice items returned.</p>'}
     ${renderAiOptions()}${renderAiStatus()}<button type="button" data-ai-tutor-mode="${mode}">Generate again</button>`;
 }
-function renderAiMcqCard(question, index) {
-  return `<fieldset class="mcq-card" data-ai-question data-correct="${question.choices.indexOf(question.answer)}">
-    <legend>${index+1}. ${escapeHtml(question.question)}</legend>
-    ${question.choices.map((choice,choiceIndex) => `<label class="quiz-choice"><input type="radio" name="ai-question-${index}" value="${choiceIndex}"> ${escapeHtml(choice)}</label>`).join('')}
-    <button type="button" data-check-ai-answer>Check answer</button><p data-ai-feedback role="status"></p>
-    <div data-ai-explanation hidden><p>Correct: ${escapeHtml(question.answer)}</p><p>${escapeHtml(question.explanation)}</p>${aiSourceCitation(question)}</div>
-  </fieldset>`;
-}
-function bindAiPractice() {
-  bindPracticeSessions();
-  responseBody.querySelectorAll('[data-check-ai-answer]').forEach(button => button.addEventListener('click', () => {
-    const card = button.closest('[data-ai-question]');
-    const choice = card.querySelector('input:checked');
-    const feedback = card.querySelector('[data-ai-feedback]');
-    if (!choice) { feedback.textContent = 'Choose an answer first.'; return; }
-    feedback.textContent = choice.value === card.dataset.correct ? 'Correct.' : 'Not quite. Review the explanation below.';
-    card.querySelector('[data-ai-explanation]').hidden = false;
-  }));
-}
+
+function bindAiPractice() { bindPracticeSessions(); }
 function assertAiPracticeResult(result, mode) {
   const cards=result.flashcards,questions=result.mcq;
   const valid=(item,card)=>Boolean(PracticeCore.normalizeItem(item,card,{legacy:true})) && [item.source,item.evidence].every(v=>typeof v==='string' && v.trim());
   if(!Array.isArray(cards) || !Array.isArray(questions) || (['flashcards','study'].includes(mode) && !cards.length) || (mode==='mcq' && !questions.length) || cards.some(c=>!valid(c,true)) || questions.some(q=>!valid(q,false)))throw Error('AI returned no valid source-grounded practice for this tool. Try generating again.');
 }
 
-function aiModeLabel(mode) {
-  if (mode === "mcq") return "AI quiz";
-  if (mode === "flashcards") return "AI flashcards";
-  return "AI study guide";
-}
 
 function fileToBase64(file) {
   return new Promise((resolve, reject) => {
@@ -3147,14 +3057,6 @@ function formatDate(value) {
   }).format(new Date(value));
 }
 
-function inferTopic(text) {
-  const lower = text.toLowerCase();
-  if (lower.includes("date") || lower.includes("year")) return "Timeline";
-  if (lower.includes("formula") || lower.includes("solve")) return "Problem solving";
-  if (lower.includes("compare") || lower.includes("different")) return "Comparison";
-  if (lower.includes("energy") || lower.includes("force")) return "Key concept";
-  return "New note";
-}
 
 function makeBlankQuestion(text) {
   const words = text.split(" ");

@@ -5,7 +5,6 @@ const os = require("os");
 const path = require("path");
 const tls = require("tls");
 const zlib = require("zlib");
-const { execFileSync } = require("child_process");
 
 const { readPublicResource } = require("./safe-reader");
 
@@ -20,6 +19,7 @@ loadEnvFile(path.join(root, ".env"));
 
 // Extraction safety limits only. AI prompt budgets are intentionally separate.
 const readerDefaults = {
+  OCR_PAGES: 30, OCR_PAGE_TIMEOUT_MS: 20000, OCR_TIMEOUT_MS: 120000,
   PDF_PAGES: 2000, PDF_CHARS: 2_000_000, OFFICE_CHARS: 2_000_000,
   NOTEBOOK_CELLS: 20000, NOTEBOOK_CHARS: 2_000_000, TEXT_CHARS: 2_000_000,
   CODE_CHARS: 2_000_000, HTML_CHARS: 2_000_000, OCR_CHARS: 2_000_000,
@@ -270,7 +270,7 @@ async function proxyCanvasRequest(request, response) {
   }
 }
 
-async function extractedResource(title, contentType, buffer) {
+async function extractedResource(title, contentType, buffer, options = {}) {
   if (/html/i.test(contentType)) {
     const html = buffer.toString("utf8");
     if (/you need access|request access to|file you have requested does not exist|enable javascript to (?:view|use)|<title[^>]*>[^<]*(?:404|403|not found)/i.test(html) || /<input[^>]+type=["']?password/i.test(html) || /<title[^>]*>[^<]*(sign in|log in|login|access denied|just a moment|attention required)/i.test(html)) {
@@ -281,7 +281,7 @@ async function extractedResource(title, contentType, buffer) {
     const problem = studyTextProblem(text);
     return readingResult({ title, readable: !problem, text, sourceKind: "page", reason: problem }, "HTML_CHARS");
   }
-  return processSourceDocument(title, contentType, buffer);
+  return processSourceDocument(title, contentType, buffer, options);
 }
 
 function externalDocumentUrl(value) {
@@ -297,7 +297,7 @@ function externalDocumentUrl(value) {
   if (doc && !url.pathname.includes('/export')) return `https://docs.google.com/${doc[1]}/d/${doc[2]}/export${doc[1] === 'presentation' ? '/pptx' : '?format=docx'}`;
   return value;
 }
-async function readExternalSource(value, download = readPublicResource) {
+async function readExternalSource(value, download = readPublicResource, options = {}) {
   let current = externalDocumentUrl(value);
   for (let hop = 0; hop < 3; hop++) {
     // No Canvas token, cookies or browser credentials are passed here.
@@ -310,22 +310,37 @@ async function readExternalSource(value, download = readPublicResource) {
       const html = result.buffer.toString('utf8');
       const linked = [...html.matchAll(/<(?:a|iframe|embed|object)\b[^>]*(?:href|src|data)=["']([^"']+)["']/gi)]
         .map(match => match[1].replace(/&amp;/g,'&'))
-        .find(link => /\.(pdf|pptx?|docx)(?:[?#]|$)/i.test(link));
+        .find(link => /\.(pdf|pptx?|docx?|xlsx?|od[pts]|rtf)(?:[?#]|$)/i.test(link));
       if (linked) { current = new URL(linked,result.url || current).href; continue; }
     }
-    const extracted = await extractedResource(filename,contentType,result.buffer);
+    const extracted = await extractedResource(filename,contentType,result.buffer,options);
     const problem = extracted.readable ? studyTextProblem(extracted.text) : '';
     return problem ? {...extracted,readable:false,text:'',reason:problem} : extracted;
   }
   return {readable:false,text:'',reason:'The document viewer did not expose a usable document after following its links. Check sharing/login or upload a permitted copy.'};
 }
+function readingDelivery(response, stream) {
+  let started=false;
+  return {
+    onProgress(message){
+      if(!stream || response.destroyed)return;
+      if(!started){response.writeHead(200,{'Content-Type':'application/x-ndjson','Cache-Control':'no-store','X-Accel-Buffering':'no'});started=true;}
+      response.write(JSON.stringify({progress:String(message)})+'\n');
+    },
+    finish(payload,status=200){
+      if(response.destroyed)return;
+      if(started)response.end(JSON.stringify({result:payload,status})+'\n');else sendJson(response,status,payload);
+    },
+  };
+}
 async function proxyExternalText(request, response) {
   const body = await readJsonBody(request);
-  try { sendJson(response,200,await readExternalSource(String(body.url || ''))); }
-  catch { sendJson(response,200,{readable:false,text:'',reason:'External source could not be retrieved safely. Check its destination, access permissions or upload an accessible copy.'}); }
+  const delivery=readingDelivery(response,body.stream===true);
+  try { delivery.finish(await readExternalSource(String(body.url || ''),readPublicResource,delivery)); }
+  catch { delivery.finish({readable:false,text:'',reason:'External source could not be retrieved safely. Check its destination, access permissions or upload an accessible copy.'}); }
 }
 
-async function downloadCanvasFile(baseUrl, token, fileId, { metadata = fetchCanvasJson, download = readPublicResource } = {}) {
+async function downloadCanvasFile(baseUrl, token, fileId, { metadata = fetchCanvasJson, download = readPublicResource, ...options } = {}) {
   const trace = [];
   let file;
   for (let refresh = 0; refresh < 2; refresh++) {
@@ -354,7 +369,7 @@ async function downloadCanvasFile(baseUrl, token, fileId, { metadata = fetchCanv
         const title = file.display_name || file.filename || 'Canvas file';
         const contentType = result.headers['content-type'] || file['content-type'] || '';
         if (/json/i.test(contentType)) continue;
-        const processed = await extractedResource(title, contentType, result.buffer);
+        const processed = await extractedResource(title, contentType, result.buffer, options);
         // An HTML login/viewer response is not a successful file download. Try the next candidate.
         if (/html/i.test(contentType) && !processed.readable) continue;
         return {...processed, trace, downloadRefreshed: Boolean(refresh)};
@@ -371,9 +386,10 @@ async function proxyCanvasFileText(request, response) {
   const token = String(body.token || '').trim();
   const fileId = String(body.fileId || '').trim();
   if (!baseUrl || !token || !/^\d+$/.test(fileId)) { sendJson(response,400,{error:'Missing Canvas URL, token or numeric file ID.'}); return; }
-  try { sendJson(response,200,await downloadCanvasFile(baseUrl,token,fileId)); }
+  const delivery=readingDelivery(response,body.stream===true);
+  try { delivery.finish(await downloadCanvasFile(baseUrl,token,fileId,delivery)); }
   catch (error) {
-    sendJson(response,error.status === 401 ? 401 : 502,{readable:false,text:'',error:error.status === 401 ? 'Canvas rejected authentication.' : 'Canvas file reader failed.',authReason:/expired/i.test(error.message) ? 'expired' : 'unauthorized'});
+    delivery.finish({readable:false,text:'',error:error.status === 401 ? 'Canvas rejected authentication.' : 'Canvas file reader failed.',authReason:/expired/i.test(error.message) ? 'expired' : 'unauthorized'},error.status === 401 ? 401 : 502);
   }
 }
 
@@ -388,12 +404,13 @@ async function proxyLocalFileText(request, response) {
     return;
   }
 
+  const delivery=readingDelivery(response,body.stream===true);
   try {
     const buffer = Buffer.from(dataBase64, "base64");
-    const processed = await processSourceDocument(title, contentType, buffer);
-    sendJson(response, 200, processed);
+    const processed = await processSourceDocument(title, contentType, buffer, delivery);
+    delivery.finish(processed);
   } catch (error) {
-    sendJson(response, 200, {
+    delivery.finish({
       title,
       text: "",
       readable: false,
@@ -809,16 +826,6 @@ function validateGroundedResult(result, sources, passages = buildEvidencePassage
   const flashcards = unique(result.flashcards.flatMap(validate), 'front');
   const points = unique((result.keyPoints || []).flatMap(validate), 'text');
   return { ...result, keyPoints: points.length ? points : flashcards.slice(0,6).map(card => ({...card, text: card.back})), flashcards, mcq: unique(result.mcq.flatMap(validate), 'question') };
-}
-
-function safeDownloadDebug(url) {
-  if (!url) return "";
-  try {
-    const parsed = new URL(url);
-    return `${parsed.origin}${parsed.pathname}`;
-  } catch {
-    return String(url).split("?")[0];
-  }
 }
 
 
@@ -1537,28 +1544,56 @@ function stripHtml(value) {
     .trim();
 }
 
-async function processLegacyPpt(title, buffer, { converter, reader, run } = {}) {
-  const readers = [process.env.CATPPT_PATH, path.join(__dirname, '.tools/catdoc/bin/catppt'), '/opt/homebrew/bin/catppt', '/usr/local/bin/catppt', '/usr/bin/catppt'].filter(Boolean);
-  const textReader = reader || (!converter && readers.find(candidate => fs.existsSync(candidate)));
-  const candidates = [process.env.LIBREOFFICE_PATH, '/Applications/LibreOffice.app/Contents/MacOS/soffice', '/usr/bin/libreoffice', '/opt/homebrew/bin/soffice'].filter(Boolean);
-  const executable = converter || (!reader && candidates.find(candidate => fs.existsSync(candidate)));
-  if (!executable && !textReader) return {title,readable:false,text:'',sourceKind:'legacy-ppt',reason:'Legacy .ppt needs LibreOffice or the catppt text reader. Install LibreOffice or run npm run setup:ppt, then retry this module.'};
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(),'canvas-ppt-'));
-  let reason = 'The legacy PowerPoint reader found no usable study text. The file may contain only images, be encrypted or damaged. Try an unlocked text-based PPTX/PDF export.';
+const officeConversions = {'.ppt':'pptx','.odp':'pptx','.doc':'docx','.rtf':'docx','.odt':'docx','.xls':'xlsx','.ods':'xlsx'};
+const runReaderTool = require('node:util').promisify(require('node:child_process').execFile);
+function libreOfficeExecutable(options = {}) {
+  if (Object.hasOwn(options,'converter')) return options.converter;
+  return [process.env.LIBREOFFICE_PATH, '/Applications/LibreOffice.app/Contents/MacOS/soffice', '/usr/bin/libreoffice', '/opt/homebrew/bin/soffice', '/usr/local/bin/soffice'].filter(Boolean).find(candidate=>fs.existsSync(candidate));
+}
+async function convertOfficeBuffer(title, buffer, target, options = {}) {
+  const executable = libreOfficeExecutable(options);
+  if (!executable) throw Error('LibreOffice is needed for this format. Install it and set LIBREOFFICE_PATH to its soffice executable, then re-read the module.');
+  const directory=fs.mkdtempSync(path.join(os.tmpdir(),'canvas-office-'));
   try {
-    const input = path.join(directory,'slides.ppt'); fs.writeFileSync(input,buffer);
-    const execute = run || require('node:util').promisify(require('node:child_process').execFile);
-    // Prefer full presentation conversion to preserve slide order and speaker notes.
-    if (executable) {
-      try {
-        await execute(executable,[`-env:UserInstallation=${require('node:url').pathToFileURL(path.join(directory,'profile')).href}`,'--headless','--convert-to','pptx','--outdir',directory,input],{timeout:45000,maxBuffer:1000000});
-        const output = path.join(directory,'slides.pptx');
-        if (!fs.existsSync(output)) throw Error('No converted output');
-        const result = processOfficeDocument(title.replace(/\.ppt$/i,'.pptx'),'application/vnd.openxmlformats-officedocument.presentationml.presentation',fs.readFileSync(output));
-        if (result.readable && result.text.trim()) return {...result,title,sourceKind:'legacy-ppt',extractor:'libreoffice'};
-        reason = 'LibreOffice converted this PPT, but found no extractable text. Image-only slides need OCR or a text-based copy.';
-      } catch { reason = 'LibreOffice could not convert this legacy PPT. It may be encrypted or damaged. Export an unlocked PPTX/PDF copy.'; }
-    }
+    const extension=path.extname(title).toLowerCase();
+    if (!Object.hasOwn(officeConversions,extension) && !['.pptx','.docx','.xlsx'].includes(extension)) throw Error('Unsupported Office conversion.');
+    const input=path.join(directory,'slides'+extension); fs.writeFileSync(input,buffer);
+    options.onProgress?.(`Converting ${title} with LibreOffice…`);
+    await (options.run || runReaderTool)(executable,[`-env:UserInstallation=${require('node:url').pathToFileURL(path.join(directory,'profile')).href}`,'--headless','--convert-to',target,'--outdir',directory,input],{timeout:45000,maxBuffer:1000000});
+    const output=path.join(directory,'slides.'+target);
+    if (!fs.existsSync(output)) throw Error('No converted output');
+    if(fs.statSync(output).size>readerLimits.ZIP_TOTAL_BYTES)throw Error('Converted output exceeds the file safety limit');
+    return fs.readFileSync(output);
+  } catch {throw Error(`LibreOffice could not convert ${path.extname(title)} within 45 seconds or its output exceeded the safety limit. It may be encrypted or damaged. Export an unlocked DOCX, PPTX, XLSX or PDF copy.`);}
+  finally {fs.rmSync(directory,{recursive:true,force:true});}
+}
+async function processLibreOffice(title, buffer, options = {}) {
+  const extension=path.extname(title).toLowerCase(),target=officeConversions[extension];
+  if(!target)return {title,readable:false,text:'',reason:'Unsupported LibreOffice conversion format.'};
+  let reason;
+  try {
+    const converted=await convertOfficeBuffer(title,buffer,target,options);
+    const result=await processSourceDocument(title.replace(/\.[^.]+$/,'.'+target),'',converted,options);
+    if(result.readable || extension!=='.ppt')return {...result,title,sourceKind:extension==='.ppt'?'legacy-ppt':result.sourceKind,extractor:'libreoffice'+(result.extractor?.includes('ocr')?'+ocr':'')};
+    reason=result.reason;
+  } catch(error){reason=error.message;}
+  if(extension==='.ppt')return processLegacyPptFallback(title,buffer,options,reason);
+  return {title,readable:false,text:'',sourceKind:'office',reason};
+}
+// Kept as a compatibility entry point for the established PPT regression tests.
+async function processLegacyPpt(title,buffer,options={}) {
+  if(options.reader && !options.converter)return processLegacyPptFallback(title,buffer,options);
+  return processLibreOffice(title,buffer,options);
+}
+async function processLegacyPptFallback(title,buffer,options={},failure='') {
+  const readers=[process.env.CATPPT_PATH,path.join(__dirname,'.tools/catdoc/bin/catppt'),'/opt/homebrew/bin/catppt','/usr/local/bin/catppt','/usr/bin/catppt'].filter(Boolean);
+  const textReader=options.reader || (!options.converter && readers.find(candidate=>fs.existsSync(candidate)));
+  let reason=failure || 'Legacy .ppt needs LibreOffice or the catppt text reader. Install LibreOffice or run npm run setup:ppt, then retry this module.';
+  if(!textReader)return {title,readable:false,text:'',sourceKind:'legacy-ppt',reason};
+  const directory=fs.mkdtempSync(path.join(os.tmpdir(),'canvas-ppt-'));
+  try {
+    const input=path.join(directory,'slides.ppt');fs.writeFileSync(input,buffer);
+    const execute=options.run || runReaderTool, executable=libreOfficeExecutable(options);
     if (textReader) {
       try {
         const { stdout } = await execute(textReader, ['-d', 'utf-8', input], {timeout:20000,maxBuffer:readerLimits.LEGACY_PPT_CHARS * 4});
@@ -1570,41 +1605,48 @@ async function processLegacyPpt(title, buffer, { converter, reader, run } = {}) 
       } catch { if (!executable) reason = 'The legacy PowerPoint reader failed or timed out. Try an unlocked PPTX/PDF export or install LibreOffice.'; }
     }
     return {title,readable:false,text:'',sourceKind:'legacy-ppt',reason};
-  } finally { fs.rmSync(directory,{recursive:true,force:true}); }
+  } finally {fs.rmSync(directory,{recursive:true,force:true});}
 }
 
-async function processSourceDocument(title, contentType, buffer) {
+async function processSourceDocument(title, contentType, buffer, options = {}) {
+  const extension=path.extname(title).toLowerCase();
+  if(Object.hasOwn(officeConversions,extension) && extension!=='.ppt')return processLibreOffice(title,buffer,options);
   const ole = buffer.subarray(0,8).equals(Buffer.from('d0cf11e0a1b11ae1','hex'));
-  if (/\.ppt$/i.test(title) && ole) return processLegacyPpt(title,buffer);
+  if (/\.ppt$/i.test(title) && ole) return processLegacyPpt(title,buffer,options);
   if (/\.ppt$/i.test(title) && !buffer.subarray(0,2).equals(Buffer.from('PK'))) return {title,readable:false,text:'',reason:'The .ppt file is not a recognized PowerPoint binary or PPTX archive. It may be a login/error response or damaged download.'};
-  if (!isPdfFile(title, contentType, buffer)) return processDownloadedFile(title, contentType, buffer);
+  if (!isPdfFile(title, contentType, buffer)) return processDownloadedFile(title, contentType, buffer, options);
   let document, task;
   try {
     const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
     task = pdfjs.getDocument({ data: new Uint8Array(buffer), useSystemFonts: true, isEvalSupported: false, verbosity: 0 });
     document = await task.promise;
-    const chunks = [], limits = [];
+    const chunks = new Map(), limits = [], emptyPages = [];
     let pagesRead = 0, characters = 0;
     for (let number = 1; number <= Math.min(document.numPages, readerLimits.PDF_PAGES); number++) {
       const page = await document.getPage(number);
       const content = await page.getTextContent();
       const text = content.items.map(item => item.str || '').join(' ').trim();
       pagesRead++;
-      if (text) { const chunk = `Page ${number}:\n${text}`; chunks.push(chunk); characters += chunk.length + 2; }
+      if (text && !options.ocrOnlyPages) { const chunk = `Page ${number}:\n${text}`; chunks.set(number,chunk); characters += chunk.length + 2; }
+      if(options.ocrOnlyPages ? options.ocrOnlyPages.includes(number) : !text)emptyPages.push(number);
       page.cleanup();
       if (characters > readerLimits.PDF_CHARS) break;
     }
     if (pagesRead < document.numPages) limits.push(`PDF safety limit: read ${pagesRead} of ${document.numPages} pages`);
-    const text = chunks.join('\n\n');
-    return readingResult({title, text, readable: Boolean(text.trim()), contentType, sourceKind:'pdf', extractor:'pdfjs',
-      reason: text.trim() ? '' : 'PDF contains no extractable text. A scanned document needs OCR; upload a text-based copy.'},
-      'PDF_CHARS', {pagesRead,totalPages:document.numPages}, limits);
+    const ocr=emptyPages.length?await ocrPdfPages(title,buffer,emptyPages,options):{texts:new Map(),issues:[],limits:[],attempted:0};
+    let ocrCharacters=0;
+    for(const [number,value] of ocr.texts){const kept=value.slice(0,Math.max(0,readerLimits.OCR_CHARS-ocrCharacters));ocrCharacters+=kept.length;if(kept)chunks.set(number,`Page ${number}:\n${kept}`);}
+    const text=[...chunks].sort((a,b)=>a[0]-b[0]).map(p=>p[1]).join('\n\n');
+    return readingResult({title, text, readable: Boolean(text.trim()), contentType, sourceKind:'pdf', extractor:ocr.attempted?'pdfjs+ocr':'pdfjs',
+      reason: text.trim() ? '' : ocr.issues.join(' ') || 'PDF contains no extractable text. OCR found no text; upload a text-based copy.'},
+      'PDF_CHARS', {pagesRead,totalPages:document.numPages,ocrPagesRead:ocr.texts.size,ocrPagesAttempted:ocr.attempted,issues:ocr.issues,partial:emptyPages.length>ocr.texts.size}, [...limits,...ocr.limits]);
   } catch {
     return {title, text: '', readable: false, contentType, reason: 'PDF could not be parsed; it may be encrypted or damaged. Upload an unlocked, text-based copy.'};
   } finally { if (task) await task.destroy(); }
 }
 
-async function processDownloadedFile(title, contentType, buffer) {
+async function processDownloadedFile(title, contentType, buffer, options = {}) {
+  if(/\.xlsx$/i.test(title) || /spreadsheetml/.test(contentType))return processXlsx(title,buffer);
   if (isNotebookFile(title, contentType)) {
     try {
       const cells = JSON.parse(buffer.toString('utf8')).cells || [];
@@ -1615,12 +1657,9 @@ async function processDownloadedFile(title, contentType, buffer) {
         'NOTEBOOK_CHARS', {cellsRead,totalCells:cells.length}, cellsRead < cells.length ? [`NOTEBOOK_CELLS: read ${cellsRead} of ${cells.length} cells`] : []);
     } catch { return {title,text:'',readable:false,reason:'Notebook file could not be parsed as JSON.'}; }
   }
-  if (isOfficeDocumentFile(title, contentType, buffer)) return processOfficeDocument(title, contentType, buffer);
-  if (isImageFile(title, contentType)) {
-    const text = extractImageTextWithOcr(title, buffer);
-    return readingResult({title,text,readable:Boolean(text.trim()),contentType,sourceKind:'ocr',reason:text.trim() ? '' : 'Image OCR is unavailable or found no text.'}, 'OCR_CHARS');
-  }
-  if (isZipFile(contentType, title, buffer)) return processZipFile(title, buffer);
+  if (isOfficeDocumentFile(title, contentType, buffer)) return readOfficeWithOcr(title, contentType, buffer, options);
+  if (isImageFile(title, contentType)) return readImageWithOcr(title,buffer,options);
+  if (isZipFile(contentType, title, buffer)) return processZipFile(title, buffer, options);
   if (isReadableTextType(contentType, title) || isCodeFile(title)) {
     const text = normalizeCodeOrText(title, buffer.toString('utf8'));
     return readingResult({title,text,readable:Boolean(text.trim()),contentType,sourceKind:isCodeFile(title) ? 'code' : 'text',reason:text.trim() ? '' : 'No text was extracted from this source.'}, isCodeFile(title) ? 'CODE_CHARS' : 'TEXT_CHARS');
@@ -1628,7 +1667,7 @@ async function processDownloadedFile(title, contentType, buffer) {
   return {title,text:'',readable:false,contentType,reason:`Unsupported content (${contentType || 'unknown format'}). Upload a supported text-based document.`};
 }
 
-async function processZipFile(title, buffer) {
+async function processZipFile(title, buffer, options = {}) {
   const archive = extractZipEntries(buffer);
   const entries = archive.filter(entry => !entry.name.endsWith('/') && isUsefulArchiveFile(entry.name));
   const chunks = [], sources = [], limits = [...archive.limits];
@@ -1636,7 +1675,7 @@ async function processZipFile(title, buffer) {
   for (const entry of entries.slice(0, readerLimits.ZIP_FILES)) {
     let result;
     try {
-      result = entry.error ? {title:entry.name,text:'',readable:false,reason:entry.error} : await processSourceDocument(entry.name, '', entry.content);
+      result = entry.error ? {title:entry.name,text:'',readable:false,reason:entry.error} : await processSourceDocument(entry.name, '', entry.content, options);
     } catch { result = {title:entry.name,text:'',readable:false,reason:'Archive document could not be parsed.'}; }
     result = readingResult(result, 'ZIP_FILE_CHARS', result.reading, result.reading?.limits || []);
     const header = `FILE: ${entry.name}\n`;
@@ -1659,13 +1698,120 @@ async function processZipFile(title, buffer) {
     'ZIP_TOTAL_CHARS', {filesRead:sources.length,totalFiles:entries.length,archiveEntries:archive.totalEntries}, limits);
 }
 
+function xmlAttributes(tag) {
+  return Object.fromEntries([...String(tag).matchAll(/([\w:.-]+)\s*=\s*(["'])(.*?)\2/g)].map(m=>[m[1],decodeXmlEntities(m[3])]));
+}
+function processXlsx(title, buffer) {
+  const entries=extractZipEntries(buffer),byName=new Map(entries.map(entry=>[entry.name,entry]));
+  const issues=entries.filter(e=>e.error).map(e=>`${e.name}: ${e.error}`);
+  const xml=name=>byName.get(name)?.content.toString('utf8') || '';
+  const textRuns=value=>[...value.replace(/<(?:\w+:)?rPh\b[\s\S]*?<\/(?:\w+:)?rPh>/g,'').matchAll(/<(?:\w+:)?t\b[^>]*>([\s\S]*?)<\/(?:\w+:)?t>/g)].map(m=>decodeXmlEntities(m[1])).join('');
+  const strings=[...xml('xl/sharedStrings.xml').matchAll(/<(?:\w+:)?si\b[^>]*>([\s\S]*?)<\/(?:\w+:)?si>/g)].map(m=>textRuns(m[1]));
+  const relationships=new Map([...xml('xl/_rels/workbook.xml.rels').matchAll(/<(?:\w+:)?Relationship\b[^>]*>/g)].map(m=>{const a=xmlAttributes(m[0]);return [a.Id,a];}));
+  const sheets=[...xml('xl/workbook.xml').matchAll(/<(?:\w+:)?sheet\b[^>]*>/g)];
+  const chunks=[];let sheetsRead=0,cellsRead=0;
+  for(const sheet of sheets){
+    const a=xmlAttributes(sheet[0]),rel=relationships.get(a['r:id']);
+    if(!rel || rel.TargetMode==='External'){issues.push(`Sheet ${a.name || '?'}: worksheet relationship missing or external; not read.`);continue;}
+    const location=rel.Target?.startsWith('/')?rel.Target.slice(1):path.posix.normalize(path.posix.join('xl',rel.Target || ''));
+    const entry=byName.get(location);
+    if(!entry || entry.error){issues.push(`Sheet ${a.name || '?'}: worksheet missing or unreadable.`);continue;}
+    const cells=[];
+    for(const cell of entry.content.toString('utf8').matchAll(/<(?:\w+:)?c\b([^>]*)>([\s\S]*?)<\/(?:\w+:)?c>/g)){
+      const attrs=xmlAttributes(cell[1]),body=cell[2];
+      const value=body.match(/<(?:\w+:)?v\b[^>]*>([\s\S]*?)<\/(?:\w+:)?v>/)?.[1];
+      const formula=body.match(/<(?:\w+:)?f\b[^>]*>([\s\S]*?)<\/(?:\w+:)?f>/)?.[1];
+      let text='';
+      if(attrs.t==='s'){
+        if(value===undefined || !/^\d+$/.test(value) || strings[Number(value)]===undefined){issues.push(`Sheet ${a.name}, ${attrs.r || 'cell'}: shared string missing.`);continue;}
+        text=strings[Number(value)];
+      }else if(attrs.t==='inlineStr')text=textRuns(body);
+      else if(attrs.t==='b')text=value==='1'?'TRUE':value==='0'?'FALSE':'';
+      else if(value!==undefined)text=decodeXmlEntities(value);
+      if(formula!==undefined)text=`Formula: ${decodeXmlEntities(formula)}; ${value===undefined?'no cached result (not calculated)':`cached result: ${text}`}`;
+      if(text.trim()){cells.push(`${attrs.r || 'Cell'}: ${text}`);cellsRead++;}
+    }
+    sheetsRead++;
+    if(cells.length)chunks.push(`Section: ${a.name || 'Unnamed sheet'}\n${cells.join('\n')}`);
+  }
+  if(!sheets.length)issues.push('Workbook sheets could not be found. The XLSX may be encrypted or damaged.');
+  const text=chunks.join('\n\n');
+  return readingResult({title,text,readable:Boolean(text.trim()),sourceKind:'spreadsheet',extractor:'xlsx-xml',reason:text?'':issues.join(' ') || 'Workbook has no readable cell values.'},'OFFICE_CHARS',{sheetsRead,totalSheets:sheets.length,cellsRead,issues,partial:issues.length>0},entries.limits);
+}
+
+async function ocrTools(options = {}, pdf = true) {
+  const names=pdf?['pdftoppm','tesseract']:['tesseract'],tools={};
+  for(const name of names){
+    const executable=options.tools && Object.hasOwn(options.tools,name)?options.tools[name]:process.env[name==='pdftoppm'?'PDFTOPPM_PATH':'TESSERACT_PATH'] || name;
+    try {if(!executable)throw Error('Missing');await (options.run || runReaderTool)(executable,[name==='pdftoppm'?'-v':'--version'],{timeout:3000,maxBuffer:10000});tools[name]=executable;}
+    catch {return {reason:`OCR needs ${names.join(' and ')} on the server. Install Poppler and Tesseract or set PDFTOPPM_PATH / TESSERACT_PATH, then re-read the module. Missing or unusable tool: ${name}.`};}
+  }
+  return tools;
+}
+async function ocrPdfPages(title,buffer,pages,options={}) {
+  const tools=await ocrTools(options),texts=new Map(),issues=[],limits=[];
+  if(tools.reason)return {texts,issues:[tools.reason],limits,attempted:0};
+  const directory=fs.mkdtempSync(path.join(os.tmpdir(),'canvas-ocr-')),deadline=Date.now()+readerLimits.OCR_TIMEOUT_MS;
+  let attempted=0,characters=0;
+  try {
+    const input=path.join(directory,'document.pdf');fs.writeFileSync(input,buffer);
+    const selected=pages.slice(0,readerLimits.OCR_PAGES);
+    for(const number of selected){
+      if(Date.now()>=deadline){limits.push('OCR_TIMEOUT_MS: OCR time budget reached');break;}
+      attempted++;options.onProgress?.(`OCR ${title}: page ${number} (${attempted} of ${selected.length} selected pages)`);
+      const prefix=path.join(directory,'page'),image=prefix+'.png';
+      try {
+        const execute=options.run || runReaderTool;
+        const timeout=()=>Math.max(1,Math.min(readerLimits.OCR_PAGE_TIMEOUT_MS,deadline-Date.now()));
+        await execute(tools.pdftoppm,['-f',String(number),'-l',String(number),'-singlefile','-scale-to','2200','-png',input,prefix],{timeout:timeout(),maxBuffer:1000000});
+        if(Date.now()>=deadline)throw Error('OCR time budget reached');
+        const {stdout}=await execute(tools.tesseract,[image,'stdout','-l',process.env.OCR_LANG || 'eng'],{timeout:timeout(),maxBuffer:readerLimits.OCR_CHARS*4});
+        const text=String(stdout || '').trim();
+        if(text){texts.set(number,text);characters+=text.length;}else issues.push(`Page ${number}: OCR found no text.`);
+        if(characters>=readerLimits.OCR_CHARS){if(characters>readerLimits.OCR_CHARS || attempted<pages.length)limits.push('OCR_CHARS: OCR text limit reached');break;}
+      }catch{issues.push(`Page ${number}: OCR failed or timed out. Check the OCR language data or use a text-based copy.`);}
+      finally{fs.rmSync(image,{force:true});}
+    }
+    if(attempted<pages.length)limits.push(`OCR_PAGES/time/text safety limits: attempted ${attempted} of ${pages.length} pages needing OCR`);
+    return {texts,issues,limits,attempted};
+  } finally {fs.rmSync(directory,{recursive:true,force:true});}
+}
+async function readOfficeWithOcr(title,contentType,buffer,options={}) {
+  const result=processOfficeDocument(title,contentType,buffer);
+  const missing=result.reading.emptySlides || [];
+  if(!missing.length)return result;
+  const tools=await ocrTools(options);
+  if(tools.reason){result.reading.issues.push(tools.reason);result.reading.partial=true;if(!result.readable)result.reason=tools.reason;return result;}
+  try {
+    const pdf=await convertOfficeBuffer(title,buffer,'pdf',options);
+    const scanned=await processSourceDocument(title.replace(/\.[^.]+$/,'.pdf'),'application/pdf',pdf,{...options,ocrOnlyPages:missing});
+    const text=[result.text,scanned.text.replace(/Page (\d+):/g,'Slide $1: [OCR]')].filter(Boolean).join('\n\n');
+    return readingResult({...result,text,readable:Boolean(text.trim()),extractor:scanned.text?'office-xml+ocr':'office-xml',reason:text?'':scanned.reason},'OFFICE_CHARS',{
+      ...result.reading,ocrPagesRead:scanned.reading?.ocrPagesRead || 0,ocrPagesAttempted:scanned.reading?.ocrPagesAttempted || 0,
+      issues:[...result.reading.issues,...(scanned.reading?.issues || []),...(!scanned.reading && scanned.reason?[scanned.reason]:[])],partial:!scanned.text || scanned.reading?.partial,
+    },[...result.reading.limits,...(scanned.reading?.limits || [])]);
+  }catch(error){result.reading.issues.push(error.message);result.reading.partial=true;if(!result.readable)result.reason=error.message;return result;}
+}
+
 function processOfficeDocument(title, contentType, buffer) {
   const entries = extractZipEntries(buffer);
   const lowerTitle = String(title || "").toLowerCase();
   const isPptx = lowerTitle.endsWith(".pptx") || String(contentType || "").includes("presentationml");
-  const xmlEntries = entries
+  let xmlEntries = entries
     .filter((entry) => isPptx ? /ppt\/slides\/slide\d+\.xml$/i.test(entry.name) : /word\/document\.xml$/i.test(entry.name))
     .sort((left, right) => left.name.localeCompare(right.name, undefined, { numeric: true }));
+  if(isPptx){
+    const presentation=entries.find(e=>e.name==='ppt/presentation.xml')?.content.toString('utf8') || '';
+    const rels=entries.find(e=>e.name==='ppt/_rels/presentation.xml.rels')?.content.toString('utf8') || '';
+    const relationships=new Map([...rels.matchAll(/<Relationship\b[^>]*>/g)].map(m=>{const a=xmlAttributes(m[0]);return [a.Id,a];}));
+    const ids=[...presentation.matchAll(/<p:sldId\b[^>]*>/g)];
+    if(ids.length)xmlEntries=ids.map(m=>{
+      const id=xmlAttributes(m[0])['r:id'],rel=relationships.get(id);
+      const target=rel?.Target?.startsWith('/')?rel.Target.slice(1):path.posix.normalize(path.posix.join('ppt',rel?.Target || ''));
+      return rel?.TargetMode!=='External' && entries.find(e=>e.name===target) || {name:id,error:'Slide relationship is missing, external or unreadable'};
+    });
+  }
+  const emptySlides=[];
   const chunks = xmlEntries
     .map((entry, index) => {
       if (entry.error) return '';
@@ -1685,13 +1831,13 @@ function processOfficeDocument(title, contentType, buffer) {
           }
         }
       }
+      if(isPptx && !text.trim())emptySlides.push(index+1);
       return text.trim() ? `${isPptx ? `Slide ${index + 1}` : "Document body"}:\n${text}` : '';
     })
     .filter(Boolean);
 
   const xmlText = chunks.join("\n\n");
-  const metadataText = xmlText.trim() || entries.limits.length || entries.some(entry => entry.error) ? "" : extractTextWithMetadata(title, buffer);
-  const text = xmlText || metadataText;
+  const text = xmlText;
 
   return readingResult({
     title,
@@ -1702,7 +1848,9 @@ function processOfficeDocument(title, contentType, buffer) {
     reason: text.trim() ? "" : "Office file opened, but no readable document or slide text was found.",
   }, "OFFICE_CHARS", {
     ...(isPptx ? {slidesRead:xmlEntries.filter(entry => !entry.error).length,totalSlides:entries.limits.length ? null : xmlEntries.length} : {}),
-    issues:entries.filter(entry => entry.error).map(entry => `${entry.name}: ${entry.error}`),
+    ...(isPptx ? {emptySlides} : {}),
+    issues:[...new Set([...entries,...xmlEntries].filter(entry => entry.error).map(entry => `${entry.name}: ${entry.error}`))],
+    partial:xmlEntries.some(entry=>entry.error),
   }, entries.limits);
 }
 
@@ -1763,14 +1911,6 @@ function extractNotebookText(rawJson) {
   return chunks.join("\n\n");
 }
 
-function safelyExtractNotebookText(rawJson) {
-  try {
-    return extractNotebookText(rawJson);
-  } catch {
-    return "";
-  }
-}
-
 function extractOfficeXmlText(xml) {
   return decodeXmlEntities(
     String(xml || "")
@@ -1797,183 +1937,18 @@ function decodeXmlEntities(text) {
     .replace(/&#x([0-9a-fA-F]+);/g, (_, code) => String.fromCharCode(parseInt(code, 16)));
 }
 
-function extractImageTextWithOcr(title, buffer) {
-  if (!ocrToolAvailable()) return "";
-
-  const extension = path.extname(title || "").toLowerCase() || ".png";
-  const tempPath = path.join(os.tmpdir(), `canvas-tutor-ocr-${Date.now()}${extension}`);
+async function readImageWithOcr(title,buffer,options={}) {
+  const tools=await ocrTools(options,false);
+  if(tools.reason)return {title,text:'',readable:false,sourceKind:'ocr',reason:tools.reason};
+  const directory=fs.mkdtempSync(path.join(os.tmpdir(),'canvas-image-ocr-'));
   try {
-    fs.writeFileSync(tempPath, buffer);
-    return String(execFileSync("tesseract", [tempPath, "stdout"], { timeout: 20000 }) || "")
-      .replace(/\s+/g, " ")
-      .trim();
-  } catch {
-    return "";
-  } finally {
-    try {
-      fs.unlinkSync(tempPath);
-    } catch {
-      // Ignore cleanup failures for temporary OCR files.
-    }
-  }
-}
-
-function extractTextWithMetadata(title, buffer) {
-  if (!metadataToolAvailable()) return "";
-
-  const extension = path.extname(title || "").toLowerCase() || ".bin";
-  const tempPath = path.join(os.tmpdir(), `canvas-tutor-md-${Date.now()}${extension}`);
-  try {
-    fs.writeFileSync(tempPath, buffer);
-    const output = String(execFileSync("mdls", ["-raw", "-name", "kMDItemTextContent", tempPath], { timeout: 10000 }) || "");
-    if (!output.trim() || output.trim() === "(null)") return "";
-    return output.replace(/\s+/g, " ").trim();
-  } catch {
-    return "";
-  } finally {
-    try {
-      fs.unlinkSync(tempPath);
-    } catch {
-      // Ignore cleanup failures for temporary metadata files.
-    }
-  }
-}
-
-function ocrToolAvailable() {
-  try {
-    execFileSync("tesseract", ["--version"], { stdio: "ignore", timeout: 3000 });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function metadataToolAvailable() {
-  try {
-    execFileSync("mdls", ["-name", "kMDItemTextContent", __filename], { stdio: "ignore", timeout: 3000 });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function extractPdfText(buffer) {
-  const chunks = [];
-  let cursor = 0;
-  const marker = Buffer.from("stream");
-
-  while (cursor < buffer.length) {
-    const streamIndex = buffer.indexOf(marker, cursor);
-    if (streamIndex === -1) break;
-
-    let dataStart = streamIndex + marker.length;
-    if (buffer[dataStart] === 0x0d && buffer[dataStart + 1] === 0x0a) dataStart += 2;
-    else if (buffer[dataStart] === 0x0a || buffer[dataStart] === 0x0d) dataStart += 1;
-
-    const endIndex = buffer.indexOf(Buffer.from("endstream"), dataStart);
-    if (endIndex === -1) break;
-
-    const objectStart = Math.max(0, buffer.lastIndexOf(Buffer.from("obj"), streamIndex) - 2500);
-    const objectHeader = buffer.slice(objectStart, streamIndex).toString("latin1");
-    const rawStream = buffer.slice(dataStart, endIndex);
-    const decoded = decodePdfStream(rawStream, objectHeader);
-    const text = extractPdfTextOperators(decoded.toString("latin1"));
-    if (text.trim()) chunks.push(text);
-    cursor = endIndex + 9;
-  }
-
-  return chunks
-    .join("\n")
-    .replace(/\s+\n/g, "\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .replace(/[ \t]{2,}/g, " ")
-    .trim();
-}
-
-function decodePdfStream(stream, header) {
-  if (!/\/FlateDecode\b/.test(header)) return stream;
-
-  try {
-    return zlib.inflateSync(stream);
-  } catch {
-    try {
-      return zlib.inflateRawSync(stream);
-    } catch {
-      return Buffer.alloc(0);
-    }
-  }
-}
-
-function extractPdfTextOperators(content) {
-  const parts = [];
-  const operatorPattern = /\[((?:.|\n|\r)*?)\]\s*TJ|\((?:\\.|[^\\()])*\)\s*Tj|<([0-9a-fA-F\s]+)>\s*Tj/g;
-  let match;
-
-  while ((match = operatorPattern.exec(content))) {
-    const token = match[0];
-    if (token.endsWith("TJ")) {
-      parts.push(extractPdfArrayText(match[1]));
-      continue;
-    }
-    if (match[2]) {
-      parts.push(decodePdfHex(match[2]));
-      continue;
-    }
-    const literal = token.match(/\((?:\\.|[^\\()])*\)\s*Tj/);
-    if (literal) parts.push(decodePdfLiteral(literal[0].replace(/\s*Tj$/, "")));
-  }
-
-  return parts
-    .map((part) => part.trim())
-    .filter((part) => part.length > 1)
-    .join(" ");
-}
-
-function extractPdfArrayText(value) {
-  const parts = [];
-  const pattern = /\((?:\\.|[^\\()])*\)|<([0-9a-fA-F\s]+)>/g;
-  let match;
-
-  while ((match = pattern.exec(value))) {
-    if (match[1]) parts.push(decodePdfHex(match[1]));
-    else parts.push(decodePdfLiteral(match[0], true));
-  }
-
-  return parts.join("").replace(/[ \t]{2,}/g, " ").trim();
-}
-
-function decodePdfLiteral(value, preserveSpacing = false) {
-  const decoded = String(value || "")
-    .replace(/^\(|\)$/g, "")
-    .replace(/\\([nrtbf()\\])/g, (_, char) => {
-      const escapes = { n: "\n", r: "\r", t: "\t", b: "", f: "", "(": "(", ")": ")", "\\": "\\" };
-      return escapes[char] ?? char;
-    })
-    .replace(/\\\d{1,3}/g, " ")
-    .replace(/[^\x09\x0a\x0d\x20-\x7e]/g, " ");
-
-  return preserveSpacing ? decoded : decoded.replace(/\s+/g, " ").trim();
-}
-
-function decodePdfHex(value) {
-  const clean = String(value || "").replace(/\s+/g, "");
-  const bytes = [];
-  for (let index = 0; index < clean.length - 1; index += 2) {
-    bytes.push(parseInt(clean.slice(index, index + 2), 16));
-  }
-
-  const buffer = Buffer.from(bytes);
-  const ascii = buffer.toString("latin1");
-  if (/^[\x09\x0a\x0d\x20-\x7e]+$/.test(ascii)) return ascii.replace(/\s+/g, " ").trim();
-
-  const utf16be = [];
-  for (let index = 0; index < buffer.length - 1; index += 2) {
-    utf16be.push(buffer.readUInt16BE(index));
-  }
-  return String.fromCharCode(...utf16be)
-    .replace(/[^\x09\x0a\x0d\x20-\x7e]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+    const input=path.join(directory,'image'+path.extname(title));fs.writeFileSync(input,buffer);
+    options.onProgress?.(`OCR ${title}…`);
+    const {stdout}=await (options.run || runReaderTool)(tools.tesseract,[input,'stdout','-l',process.env.OCR_LANG || 'eng'],{timeout:readerLimits.OCR_PAGE_TIMEOUT_MS,maxBuffer:readerLimits.OCR_CHARS*4});
+    const text=String(stdout || '').trim();
+    return readingResult({title,text,readable:Boolean(text),sourceKind:'ocr',extractor:'tesseract',reason:text?'':'Image OCR found no text; use a clearer or text-based copy.'},'OCR_CHARS');
+  }catch{return {title,text:'',readable:false,sourceKind:'ocr',reason:'Image OCR failed or timed out. Check Tesseract language data or use a text-based copy.'};}
+  finally {fs.rmSync(directory,{recursive:true,force:true});}
 }
 
 function normalizeCodeOrText(title, rawText) {
@@ -2071,6 +2046,7 @@ function isUsefulArchiveFile(name) {
     ".ipynb",
     ".pynb",
     ".pdf",
+    ".doc", ".rtf", ".odt", ".odp", ".ods", ".xls", ".xlsx",
     ".docx",
     ".pptx",
     ".ppt",
@@ -2125,5 +2101,5 @@ module.exports = {
   deliveryNote,
   readDigestConfig,
   processSourceDocument, extractedResource, validateGroundedResult, parseAiTutorJson,
-  buildEvidencePassages, validatedPassageBundle, validateIndexedConcepts, readerLimits, configuredReaderLimits, server, aiStatus, normalizeAiOptions, aiOutputBudget, proxyAiTutor, proxyGradeAnswer, proxyAiChat, validateChatReply, validateStudyGuide, downloadCanvasFile, readExternalSource, processLegacyPpt, requestAiResponse,
+  buildEvidencePassages, validatedPassageBundle, validateIndexedConcepts, readerLimits, configuredReaderLimits, server, aiStatus, normalizeAiOptions, aiOutputBudget, proxyAiTutor, proxyGradeAnswer, proxyAiChat, validateChatReply, validateStudyGuide, downloadCanvasFile, readExternalSource, processLegacyPpt, processLibreOffice, convertOfficeBuffer, processXlsx, ocrPdfPages, readingDelivery, requestAiResponse,
 };

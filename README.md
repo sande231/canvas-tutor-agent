@@ -1,433 +1,131 @@
 # Canvas Tutor
 
-A student study canvas prototype that can connect to Canvas LMS through a local proxy.
+Canvas Tutor (`canvas-tutor-agent`) connects to Canvas LMS, reads a course module,
+and makes cited study guides, quizzes and flashcards. Students can also ask the
+module tutor questions, review mistakes, practise weak concepts and save study
+material in their browser. It uses vanilla JavaScript and a plain Node server:
+no framework and no build step.
 
-## Safe Local Preview
+## Run locally
 
-Run `npm run preview` and open http://127.0.0.1:4177 (or use
-`npm run preview -- 4188` for a different port). This binds to localhost and sets
-`EMAIL_DISABLED=1`, which blocks the scheduler, Schedule/Test Mail endpoints,
-email delivery, and draft creation, even when `.env` has provider credentials.
-Canvas and tutor features remain available. Mail Status reports `disabled`.
-The saved digest config/state are not changed. Stop with Ctrl+C.
-
-Normal `npm start` / `node server.js` launches enable the scheduler, which checks
-saved configuration every minute. Preview mode only affects this process; it
-does not disable separately installed launchd jobs or cloud schedules.
-
-## Run In Codex
-
-From this folder:
+Use **Node 22.13.0 or newer**:
 
 ```bash
-node server.js
+npm install
+npm run preview
 ```
 
-Open:
+Open [http://127.0.0.1:4177](http://127.0.0.1:4177). For another port, use
+`npm run preview -- 4188`. Use this Node URL rather than `file://` or a static-only
+server. Stop the preview with Ctrl+C.
 
-```text
-http://127.0.0.1:4177
-```
+`npm run preview` binds to localhost and sets `EMAIL_DISABLED=1`. It blocks the
+scheduler, Schedule/Test Mail endpoints, email delivery and draft creation, even
+if private provider credentials exist. Mail status reports `disabled`. It does
+not modify saved digest configuration or affect separate processes, launchd jobs
+or cloud schedules. **Normal `npm start` / `node server.js` enables the existing
+scheduler.** Use the preview command for development.
 
-Use this Node preview URL for Canvas connection. Do not use the `file://` page or the older Python preview ports.
+Copy `.env.example` to a private `.env` to configure AI and optional reader tools,
+then restart. `OPENAI_API_KEY` stays on the server; `OPENAI_MODEL` defaults to
+`gpt-5-mini`. The optional multi-model picker was not added: one configured model
+is used throughout indexing, generation, chat and short-answer grading.
+Never commit `.env` or paste keys/tokens into GitHub.
 
-If the port is busy, run with another port:
+## Connect and navigate
+
+Enter your school Canvas URL and your own access token, then choose **Connect**.
+The browser forwards that in-memory token through the authenticated Node proxy;
+it does not substitute saved mail credentials. A Canvas 401 shows an error beside
+Connect and stops automatic retries. Replace an expired token privately using
+your Canvas account settings, then reconnect. Tokens are never placed in URLs or
+browser storage. The OpenAI key is never sent to the browser.
+
+Successful connection opens the dashboard in the same tab. It lists active
+courses, including those without upcoming work, and a seven-day deadline list.
+Click a course for Overview, Assignments, Modules, AI Tutor, Flashcards, Quizzes,
+Notes, Study Plan, Goals and Resources. Sidebar views include Planner, Goals,
+Resources, Study Board, Focus Sprint, Tutor Tools, Saved Practice and Settings.
+Settings contains the connection and Daily Focus Mail controls. Tutor output is
+collapsible; shared rooms and study buddies are labelled Coming soon.
+
+Use Modules to inspect sources, Flashcards/Quizzes to choose practice options,
+and AI Tutor to select a module for a guide or conversation. Files are read
+through Canvas automatically. Manual upload is a fallback when you have a
+permitted copy of a blocked source. Assignment planning still uses loaded
+assignment descriptions, rubrics and related module material.
+
+Navigation supports keyboard controls and browser Back; URL fragments contain
+view and course IDs only. Refresh clears Canvas authentication and the session's
+extraction/index cache. Reconnect for fresh Canvas data; saved board notes,
+guides, cards, quizzes and progress remain available in the same browser/origin.
+
+Board cards persist edits, deletions, dragging and layout changes. Malformed saved
+data is ignored; blocked/full storage produces a visible warning. The board is a
+separate view, with measured card heights for arrangement and arrow-key movement.
+Graded-only averages exclude null/blank scores and include numeric zero. They
+cover loaded assignments, not the complete Canvas grade; empty grades show
+**No graded work**.
+
+## Source access and supported formats
+
+The reader paginates module items and reads Canvas pages, discussion bodies,
+assignment/quiz descriptions and downloadable files. SubHeaders are headings,
+not failed documents. Headings are retained, and same-origin `/files/<id>` links
+inside page/assignment/discussion bodies become deduplicated child sources,
+one level deep. Four readers run concurrently and the session cache is reused.
+**Re-read module** refreshes sources and invalidates the session index.
+
+| Format | Reader |
+| --- | --- |
+| PDF, including PDFs in ZIPs | PDF.js; optional OCR for pages without extracted text |
+| DOCX | Document-body XML |
+| PPTX | Slide text and linked speaker notes; optional OCR for slides without text |
+| XLSX | Named worksheet XML, shared/inline strings, raw cell values and labelled formula caches |
+| PPT, ODP | LibreOffice → PPTX; catppt remains a fallback for legacy PPT |
+| DOC, RTF, ODT | LibreOffice → DOCX |
+| XLS, ODS | LibreOffice → XLSX |
+| IPYNB/PYNB | Markdown, code and raw cells |
+| Text, Markdown, CSV, JSON, HTML, source code | Text extraction |
+| PNG, JPEG, TIFF, BMP | Optional Tesseract OCR |
+| ZIP | Supported document types above; no recursive ZIP expansion |
+
+Sources and reading details show characters, pages/slides, sheets/cells or archive
+members where available, plus OCR counts, failed pages and safety limits. Raw text
+is retained up to explicit limits; the quality filter can still reject headings,
+login pages or meaningless text as insufficient for study questions.
+
+External URLs never receive Canvas credentials. `safe-reader.js` validates every
+redirect, blocks private/reserved IPv4 and IPv6 destinations, pins DNS to the
+connection, and limits downloads to 20 MB and five redirects. Public Drive/Docs/
+Slides viewers can resolve to accessible exports; simple linked documents can be
+followed. Browser-login/JavaScript-only pages and permission denials remain blocked.
+Canvas downloads preserve signed query parameters, refresh stale metadata and
+report status codes without showing tokens or signed URLs.
+
+## Development checks and file map
 
 ```bash
-node server.js 4180
-```
-
-## Work Later
-
-When you come back another day:
-
-```bash
-cd /Users/sandeep/Documents/Codex/2026-05-12/canvas-tutor
-node server.js
-```
-
-Then open the local URL printed in Terminal. If the port is busy, use a new one:
-
-```bash
-node server.js 4188
-```
-
-Keep your private keys in `.env`. Do not paste Canvas tokens, Resend keys, or SMTP passwords into GitHub.
-
-## Board Notes and Grades
-
-Study-board cards are saved locally in this browser and restored after refresh.
-Use each card's Edit/Delete buttons; dragging, Auto Layout, and Reset Board also
-save the resulting board. Only note fields are stored, not connection credentials.
-Malformed saved entries are skipped. If browser storage is blocked or full, the
-board remains usable but changes cannot persist. Storage is specific to the
-browser and origin (including the preview port).
-
-The Student Success Center shows a points-weighted **Graded-only average** of
-loaded assignments, excluding missing/blank scores and including real zeroes.
-This is not the full Canvas course grade: the current scan loads upcoming work.
-When no eligible grades exist, it displays **No graded work**.
-
-Run focused checks with `node --test tests/board-grades.test.js`.
-
-## Canvas Connection
-
-In the app, enter:
-
-- School Canvas URL, for example `https://your-school.instructure.com`
-- Canvas access token from your own Canvas account
-
-Click **Connect**, then **Import Work**.
-
-The app sends Canvas requests through the local `/api/canvas` proxy in `server.js`, which avoids direct browser CORS failures.
-
-Use the **Agent** tutor tool to explain the project, diagnose Canvas reader problems, list what has already been fixed, and show which module files are still blocked or unreadable.
-
-After Canvas connects, the tutor panel shows your active Canvas courses as **Study Areas**. Pick a course to get a focused breakdown of upcoming assignments and what to study first.
-
-Each course also has **Assignment Coach**:
-
-- Reads upcoming assignments for the selected course
-- Reads Canvas modules and module items
-- Opens readable module content such as pages, assignment descriptions, discussions, quizzes, and file metadata
-- Reads posted course notes from Canvas pages, announcements, and discussion posts
-- Matches useful module material to the assignment
-- Shows related posted notes to review before starting
-- Explains the assignment in plain language
-- Builds an assignment workspace with Understand First, Do The Work In Parts, Quiz Prep, and Before You Submit sections
-- Creates practice questions from assignment instructions and related module material
-- Builds a step-by-step assignment plan
-- Shows rubric/full-credit clues when Canvas exposes a rubric
-- Can add the plan to the canvas or start a Focus Sprint for that assignment
-
-Each selected course also shows **Select Module**:
-
-- Pick a Canvas module
-- Load the course module outline quickly before deeply reading large module files
-- Study the selected Canvas module
-- Show how many module items were scanned and how many exposed readable content
-- Open Canvas module files through the local proxy when Canvas allows downloads
-- Read full text from text/HTML/RTF-style files
-- Parse `.ipynb` notebooks into markdown and code cells
-- Read `.txt`, `.md`, `.csv`, `.json`, `.html`, and other plain text files
-- Extract text from normal text-based `.pdf` files and slides when Canvas allows downloads
-- Extract text from `.docx` Word documents
-- Extract text from `.pptx` PowerPoint slides
-- Use optional OCR for image files when Tesseract is installed locally
-- Read source-code files such as `.py`, `.js`, `.ts`, `.java`, `.c`, `.cpp`, `.cs`, `.sql`, and `.r`
-- Open `.zip` files and extract useful notebooks, coding files, text files, PDFs, DOCX, PPTX, and images inside
-- Mark scanned PDFs/images as needing OCR instead of pretending to read them
-- Generate deeper study notes from that module
-- Extract key points and key terms
-- Generate a separate flashcard deck directly from readable module facts
-- Create source-based multiple-choice quiz questions from sentences inside module pages/files/PDFs/notebooks
-- Build learning goals, core concept explanations, coding practice tasks, and common mistakes
-- Add the generated module note to the canvas
-
-OCR note: text-based PDFs, DOCX, PPTX, notebooks, text files, code files, and zip contents can be read directly. Image files use OCR only if Tesseract is installed on the machine running the app. Scanned PDFs may still need OCR/PDF image conversion tooling.
-
-## Daily Focus Mail
-
-Use **Daily Focus Mail** after Canvas is connected:
-
-1. Add your email.
-2. Choose a daily send time.
-3. Click **Schedule**.
-4. Click **Test Mail** to generate one immediately.
-
-If email sending is not configured, the app saves `.eml` drafts in `outbox/`.
-
-The daily email sends a **Canvas To Do** list plus **5 Canvas Tutor focus points** at your selected time. It includes upcoming Canvas items, course names, item types, due dates, Canvas links when available, what to start first, what to prepare next, and one end-of-day Canvas check.
-
-Use **Mail Status** to see whether the app is in real-email mode or draft-outbox mode, and to view recent saved drafts.
-
-To send real email, copy the example config:
-
-```bash
-cp .env.example .env
-```
-
-Then fill in either SMTP or Resend settings in `.env` and restart:
-
-```bash
-node server.js
-```
-
-SMTP example for Gmail:
-
-```text
-SMTP_HOST=smtp.gmail.com
-SMTP_PORT=465
-SMTP_SECURE=true
-SMTP_USER=your_email@gmail.com
-SMTP_PASS=your_gmail_app_password
-EMAIL_FROM="Canvas Tutor <your_email@gmail.com>"
-```
-
-Resend example:
-
-```text
-RESEND_API_KEY=re_your_key
-EMAIL_FROM="Canvas Tutor <you@your_verified_domain.com>"
-```
-
-Use **Mail Status** after restarting to confirm it says real email instead of draft outbox.
-
-The daily schedule runs only while `node server.js` is running.
-
-### Background Daily Email On Mac
-
-You can keep daily Canvas To Do emails running even when the browser tab is closed by installing the background mail agent:
-
-```bash
-./scripts/install-background-mail.sh
-```
-
-It starts the app in the background at:
-
-```text
-http://127.0.0.1:4200
-```
-
-The background agent starts when you log in and keeps the daily scheduler alive while your Mac is awake. If your Mac is asleep or powered off at the scheduled time, the local scheduler cannot send mail. For always-on mail, deploy the app to Render.
-
-To remove the background agent:
-
-```bash
-./scripts/uninstall-background-mail.sh
-```
-
-To temporarily test Canvas To Do email every 2 minutes:
-
-```bash
-node scripts/enable-two-minute-mail-test.js
-```
-
-When testing is done, restore the normal daily schedule:
-
-```bash
-node scripts/restore-daily-mail.js
-```
-
-## Deploy To Render
-
-This project includes `package.json` and `render.yaml` so Render can run it as a Node web service.
-
-Recommended Render settings:
-
-- Build command: `npm install`
-- Start command: `npm start`
-- Environment variable: `RESEND_API_KEY`
-- Environment variable: `EMAIL_FROM`
-- Environment variable: `CANVAS_BASE_URL`
-- Environment variable: `CANVAS_TOKEN`
-- Environment variable: `DIGEST_EMAIL`
-- Environment variable: `DIGEST_TIME` with value `07:30`
-- Optional environment variable: `DIGEST_PROFILE_NAME`
-
-For a personal always-on daily email, add your own Canvas token to Render environment variables. Do not commit it to GitHub. For a multi-student app, each student would need their own secure login/token flow instead of shared environment variables.
-
-Render note: Free web services can spin down after inactivity. For the most reliable scheduled email, use a paid always-on web service or a Render Cron Job/service design.
-
-This repo also includes a Render Cron command for daily email:
-
-```bash
-npm run send-digest
-```
-
-The `render.yaml` blueprint includes a cron service named `canvas-tutor-agent-daily-email`. Render cron schedules use UTC, so the included `30 11 * * *` schedule is 7:30 AM Eastern during daylight saving time. Adjust it in the Render dashboard if needed.
-
-## Free Cloud Daily Email With GitHub Actions
-
-For a no-cost setup that works even when your Mac is asleep, use the included GitHub Actions workflow:
-
-```text
-.github/workflows/daily-canvas-todo.yml
-```
-
-It runs `npm run send-digest` every day at `30 11 * * *`, which is 7:30 AM Eastern during daylight saving time. It can also be run manually from the GitHub **Actions** tab.
-
-Add these repository secrets in GitHub:
-
-- `RESEND_API_KEY`
-- `EMAIL_FROM`
-- `CANVAS_BASE_URL`
-- `CANVAS_TOKEN`
-- `DIGEST_EMAIL`
-- `DIGEST_PROFILE_NAME`
-
-GitHub Actions cron uses UTC, so adjust the cron time when daylight saving time changes if you want the email to stay exactly at 7:30 AM Eastern.
-
-## Files
-
-- `index.html` - app shell and controls
-- `styles.css` - layout and visual styling
-- `app.js` - canvas notes, tutor actions, and Canvas client logic
-- `server.js` - static file server, local Canvas API proxy, and daily digest scheduler
-- `package.json` - Node start/check scripts for local use and Render
-- `render.yaml` - Render web service blueprint
-- `.env.example` - private email configuration template
-
-## Application Navigation
-
-Connect opens the dashboard in the same tab. The dashboard lists active Canvas
-courses independently of upcoming assignments, with a separate seven-day deadline
-list. The sidebar provides Settings, Study Board, Focus Sprint, Tutor Tools, and
-course pickers for Planner, Goals, and Resources. Course workspaces have Overview,
-Assignments, Modules, AI Tutor, Flashcards, Quizzes, Notes, Study Plan, Goals, and
-Resources navigation. Tutor output expands in a collapsible panel. Shared rooms
-and study buddies are explicitly Coming soon.
-
-View navigation uses URL fragments containing only view names and course IDs;
-browser Back works, and tokens remain in memory. After a full refresh, reconnect
-to use Canvas; saved notes remain accessible without reconnecting. Settings shows
-mail disabled in the safe preview. Arrange spaces board cards using measured card
-heights, and focused cards can be moved with arrow keys.
-
-The DOM integration check uses mocked Canvas responses and no real credentials.
-To run it without adding application dependencies:
-
-```bash
-npm install --prefix /tmp/canvas-ui-check jsdom --no-audit --no-fund
-NODE_PATH=/tmp/canvas-ui-check/node_modules node --test tests/navigation.test.js
-node --test tests/board-grades.test.js
+npm test
 npm run check
 ```
 
-These checks cover authentication errors and success, courses without deadlines,
-course tabs and scoping, Back/dashboard navigation, note restoration, arrangement,
-and disabled mail. They do not replace a visual browser check or a live Canvas test.
+Tests use fixtures and mocked Canvas/OpenAI fetches. Installed LibreOffice/catppt
+readers also have local fixture checks; missing executables can skip those tests.
+No test sends email or uses real Canvas/API credentials. Syntax checks alone do
+not establish successful generation. Live accounts and visual browser behavior
+need separate checks.
 
-## Automatic Module Reading
+- `app.js`, `ui.js`, `index.html`, `styles.css`: browser, navigation and study board.
+- `source-index.js`: shared stable passages, indexing, selection and coverage.
+- `practice-core.js`, `practice-ui.js`: type validation, quiz/review and persistence.
+- `tutor-core.js`, `tutor-ui.js`: guide schema, passage retrieval and conversation UI.
+- `server.js`: API proxies, readers, AI validation and existing mail service.
+- `safe-reader.js`, `source-quality.js`: network destination checks and text quality.
+- `tests/`: fixture-based regression checks. `AGENTS.md`: project working rules.
+- `.env.example`: configuration; `render.yaml`: deployment blueprint.
 
-Use Node 22.13+ and run `npm install` (PDF.js is now a runtime dependency).
-Selecting a module loads every page of its item list, then retrieves Canvas page
-bodies, discussion messages, assignment/quiz descriptions and files. Section
-headings are skipped. AI Flashcards and AI MCQ Quiz refresh this selected module
-before generation; switching modules or navigating discards stale results.
-
-Public ExternalUrl sources are retrieved without Canvas credentials. Each redirect
-is validated, private/reserved IPv4 destinations and IPv6 destinations are blocked,
-and DNS answers are pinned to the connection. Downloads are limited to 20 MB and
-five redirects. Login pages, denied requests, unsupported formats and empty bodies
-show recovery instructions; uploading an accessible copy remains a fallback.
-Scanned PDFs still require OCR or a text-based copy. External pages requiring
-JavaScript/browser login cannot be read automatically.
-
-PDF.js extracts PDF text with page labels. Office ZIP reading supports data
-descriptors, DOCX bodies and numbered PPTX slides. Notebook and plain-text readers
-remain supported. AI input is excerpted to at most 12,000 characters per source
-and 45,000 total. The source report distinguishes readable, blocked and heading
-items. Generated cards/questions show source titles, available page/section labels,
-and supporting excerpts. The server rejects citations not found in the provided
-source and quizzes whose answer is not among their choices. These checks do not
-prove every model interpretation correct.
-
-Run all offline checks (using the temporary jsdom setup described above):
-
-```bash
-NODE_PATH=/tmp/canvas-ui-check/node_modules node --test tests/*.test.js
-```
-
-Live verification: connect privately, open COSC201 → Week 4, then choose AI
-Flashcards or AI MCQ Quiz. Check the discussion and external-link reading statuses
-and Sources used. No real Canvas token or AI provider call is used by the tests.
-
-### Flashcard / quiz failure repairs
-
-The Responses request now includes an explicit JSON instruction in its input
-message and a complete source-citation structure. Malformed, incomplete, refused,
-empty or ungrounded output is shown as an error. Flashcards reveal their answers;
-quizzes accept a choice before displaying correctness, explanation and citation.
-Generated practice remains available when returning to the same course/tool tab.
-
-File reading distinguishes metadata denial from download denial. It preserves
-signed query strings, resolves `public_url` JSON to a real download URL, and retries
-with freshly fetched metadata before reporting download failure. A sanitized
-per-item trace reports stages and status codes, never tokens or signed URLs.
-
-Legacy binary `.ppt` now uses **LibreOffice first**. LibreOffice 26.8.0.3 is
-installed at `/Applications/LibreOffice.app`; the server detects its `soffice`
-executable automatically. It converts binary presentations to PPTX, then uses
-our existing slide and speaker-note extraction. On another machine, install
-LibreOffice or set `LIBREOFFICE_PATH` to its `soffice` executable.
-
-Conversion uses an isolated temporary profile, a 45-second limit, bounded output
-and automatic cleanup. If conversion fails or produces no text, the installed
-**catppt** reader remains available as a fallback. Image-only, encrypted or
-damaged files can still require OCR or an unlocked text-based export.
-
-`npm run setup:ppt` installs the small fallback reader (catdoc 0.97.2) into ignored
-`.tools/catdoc`, using a pinned, checksum-verified release. It requires a C compiler
-and make. Alternatively set `CATPPT_PATH` to an existing executable. catppt output
-uses extracted **section** references because its stream does not reliably
-preserve visible slide numbers and may include retained revision text; identical
-blocks are deduplicated. Restart `npm run preview` after installing either reader.
-
-To make room for LibreOffice, eight unused August Codex updater-cache copies were
-removed (4.54 GiB recovered). Personal files and project data were preserved.
-The official installer checksum was verified before direct installation from its
-DMG after Homebrew's unpack step failed.
-
-Public Google Drive/Docs/Slides viewer links are resolved to download/export URLs,
-retaining resource keys. Simple linked documents in public HTML viewers can be
-followed through the same destination checks. Login, error and short/meaningless
-viewer text is rejected and never sent to AI as study content. This quality filter
-is deliberately conservative; a very short legitimate note can also be excluded.
-
-`tests/generation-regression.test.js` exercises actual request construction,
-upstream errors, stale download recovery, permission denial, unusable viewers,
-conversion dispatch, and Create-button → validated-server-response → interactive
-rendering. Test study text and credentials are synthetic. A live OpenAI smoke test
-with synthetic text returned four validated flashcards. The saved Canvas token
-returned 401/expired, so the two actual Week 2 downloads were not live-verified.
-
-### Student-focused study cards
-
-Study Module and manual-upload study actions now use the same AI generation path
-as Create flashcards, replacing the old template cards built from filenames and
-slide-title fragments. Study results show important points and concept questions
-with revealable answers. Source evidence and reading diagnostics are collapsed.
-Important points and cards are checked against the selected module sources;
-filename questions, repeated prompts and slide-index answers are rejected.
-PowerPoint extraction includes linked speaker notes and removes slide-number,
-date and footer placeholders. Heading-only decks are flagged as insufficient
-instead of generating invented explanations. Existing board notes remain saved;
-reopen a module to regenerate its study content with the new flow.
-
-### Generation wait and recovery
-
-Each request now asks for only the selected tool: up to five flashcards (plus
-important points) or five quiz questions. GPT-5 requests use low reasoning effort;
-the configured model is unchanged. The UI shows elapsed generation time and a
-Cancel button. A 75-second server deadline covers both the provider request and
-response body; an independent 85-second browser deadline prevents indefinite
-loading if the proxy connection stalls. Failures show Retry, cancellation ignores
-late results, and navigating away aborts the active browser generation request.
-No template or invented questions are substituted on failure.
-
-### Passage citations and generation verification
-
-AI requests label actual source passages with request-local IDs. The model selects
-a supporting passage; the server attaches its original text, filename and section.
-This avoids discarding otherwise valid questions due to retyped-quote formatting
-or numeric source IDs. Unknown or mismatched references remain rejected. Quiz
-answer letters A–D are resolved to the corresponding choice; arbitrary invalid
-answers are rejected. No generic fallback cards are substituted.
-
-27 focused checks pass, including a real binary PPT extraction, passage references,
-incorrect references, interactive flashcards/quiz answers, module switches, saved
-notes, failed downloads and empty sources. Live calls to the configured model
-using synthetic 9,570-character EDA material returned five cards and five quiz
-questions in about seven seconds each. This does not verify private Week 2/5
-Canvas files or external links; those must be retried in the connected preview.
-
-A DOM-based live check also exercised both Create buttons through the running
-preview and real AI service with synthetic Canvas page content: five visible
-flashcards, five quiz questions, answer reveal, quiz feedback, and return-to-tab
-retention all passed. Run `npm test` for the offline regression suite.
-
-### Practice counts and AI availability
+### Practice counts and AI availability (Phase 1)
 
 Choose 5, 10, 15, 20 or 30 cards/questions, or a custom count from 1 to 50,
 and easy, medium, hard or mixed difficulty before generating. These preferences
@@ -505,6 +203,9 @@ use the defaults. No dependencies were added.
 | `READER_ZIP_ENTRIES` | 10,000 archive entries inspected |
 | `READER_ZIP_ENTRY_BYTES` | 32,000,000 bytes per entry |
 | `READER_ZIP_TOTAL_BYTES` | 128,000,000 expanded bytes |
+| `READER_OCR_PAGES` | 30 pages requiring OCR per document |
+| `READER_OCR_PAGE_TIMEOUT_MS` | 20,000 ms per OCR tool operation |
+| `READER_OCR_TIMEOUT_MS` | 120,000 ms per document OCR loop |
 
 Network-download limits and SSRF protections remain in `safe-reader.js`.
 
@@ -639,8 +340,7 @@ exam attribution, timers and static script delivery. Earlier UI tests were updat
 intentionally to assert the new flip-card and scored-quiz behavior instead of
 `<details>` cards and per-question answer buttons. Live Canvas access, real model
 quality across each type, AI grading accuracy and visual browser QA still require
-live verification. No dependencies, email/digest behavior or Phase 5 features were
-added.
+live verification.
 
 ### Study guides and module conversations (Phase 5)
 
@@ -696,3 +396,233 @@ reveal, all four item actions, quiz progress, cancellation, stale replies, provi
 errors and static delivery. The navigation test intentionally now expects the
 tutor module picker instead of the old generator-only panel. Live Canvas access,
 real model explanations/hint quality and visual browser QA remain unverified.
+
+### Office formats and optional OCR (Phase 6)
+
+`processLibreOffice` handles legacy and OpenDocument conversion. Each conversion
+uses a fresh temporary directory and LibreOffice profile, a 45-second timeout,
+bounded command output and cleanup on success or failure. The converted document
+then uses the same full-text reader as a native DOCX/PPTX/XLSX. The original source
+filename stays on citations. LibreOffice's supported exports are described in its
+[conversion filters](https://help.libreoffice.org/latest/en-US/text/shared/guide/convertfilters.html).
+
+Install LibreOffice on the machine running the server. The reader detects the
+standard macOS application and common Linux/Homebrew paths; otherwise set
+`LIBREOFFICE_PATH` to the `soffice` executable. For PPT only, `CATPPT_PATH` or the
+ignored `.tools/catdoc/bin/catppt` can provide a text-only fallback. The existing
+`npm run setup:ppt` installs that fallback using a pinned/checksummed source and
+requires a C compiler and make. catppt references are sections rather than reliable
+slide numbers and may include revision text.
+
+XLSX is read without a new dependency, using workbook relationships, shared strings
+and worksheet cells, following the [SpreadsheetML structure](https://learn.microsoft.com/en-us/office/open-xml/spreadsheet/structure-of-a-spreadsheetml-document).
+Each sheet begins with `Section: <sheet name>`. Cell addresses, zeroes, strings and
+booleans are retained. Formula text and cached results are labelled; formulas,
+macros and external workbook links are not executed by the XML reader. Formatting,
+charts and date-display conversion are not reconstructed. Missing worksheet/string
+parts are reported as partial extraction.
+
+PDF pages with no extracted text use Poppler's `pdftoppm` to rasterize one page at
+a time, then Tesseract. Image-only slides are first rendered to PDF by LibreOffice;
+existing slide text remains intact. Standalone images need only Tesseract.
+[Tesseract accepts image input, not PDF directly](https://tesseract-ocr.github.io/tessdoc/InputFormats.html).
+Tools are optional: missing executables produce specific installation/recovery
+messages. No packages are installed automatically.
+
+Configure `PDFTOPPM_PATH` and `TESSERACT_PATH` if the commands are not on PATH.
+`OCR_LANG` defaults to `eng`; language packs must be installed in Tesseract, and
+multiple languages can use a value such as `eng+spa`. Restart the preview after
+installation/configuration. Reader requests stream conversion and OCR progress
+into a `role="status"` message. Late progress/results from an old module are ignored.
+
+Default OCR limits are 30 pages requiring OCR per document, 20 seconds per tool
+operation and 120 seconds for the document's OCR loop. Raster images are bounded
+at 2,200 pixels on their longest side. Override these with `READER_OCR_PAGES`,
+`READER_OCR_PAGE_TIMEOUT_MS` and `READER_OCR_TIMEOUT_MS`; text output also obeys
+`READER_OCR_CHARS` and the format's character limit. Failed pages and unattempted
+pages remain visible, while successful text is kept. Conversion/tool probing is
+additional to the OCR loop budget. ZIP member documents each have their own OCR
+budget. Full indexing cannot recover text omitted by reading limits.
+
+The mail workflow now uses Node 22.13.0 to match the minimum in `package.json`.
+No mail functions, SMTP, schedules, scripts or launchd files were changed.
+`npm run preview` continues to disable email.
+
+### Review findings and remaining limits
+
+The six-phase diff was reviewed for grounding, storage, stale requests and reader
+limits. Unused regex PDF extraction, old MCQ rendering, unused page-fetch helpers,
+unused download-debug formatting and the OS metadata text fallback were removed.
+The old offline module generators were removed in Phase 5. Diagnostic logging is
+limited to existing operational messages and incomplete-response reasons; no
+source text, prompts or credentials are logged by these changes.
+
+Remaining fragile areas:
+
+- Model citations establish a real supporting passage, not a proof of semantic
+  correctness. Real explanations, distractors, hints and short-answer grading
+  still need student/instructor judgment and live model evaluation.
+- OCR can misread symbols, code, tables and diagrams. It runs on pages/slides with
+  no extracted text; a page containing a small text layer plus a large diagram
+  may still need an OCR-readable export. Speaker notes, text boxes and diagram
+  reading order can differ from the visual layout. OCR is labelled in coverage.
+- Readers use bounded ZIP/XML parsing, not a full Office layout engine. DOCX body
+  text does not include every possible header, embedded object or annotation.
+  XLSX styles/charts and encrypted or damaged files remain limited. ZIP64 and
+  unusual namespace/layout variants need more fixtures.
+- Large modules require many AI calls, time and provider usage. Indexing can miss
+  concepts, and a short quiz cannot test everything. Coverage and shortfalls are
+  reported; Quick mode is a sample. Keyword chat retrieval can miss a relevant
+  passage with different vocabulary.
+- Browser storage is finite and tied to an origin. Saved study content survives
+  refresh, but session extraction, the index and chat do not. Some older course
+  note/goal controls predate the guarded board/practice storage helpers.
+- Conversion/OCR processes are bounded but are not an OS sandbox. This remains a
+  personal local application; public multi-user deployment needs authenticated
+  endpoints, resource/concurrency quotas and process isolation. Reading work
+  already started on the server may finish after navigating away, while late UI
+  updates are discarded.
+
+Phase 6 fixtures cover every conversion dispatch, cleanup/failures, XLSX cell
+extraction, archive dispatch, missing OCR tools, mixed native/OCR PDFs, image-only
+slides, limits, partial failures, streamed progress and unchanged legacy paths.
+A local smoke check also converted and read synthetic RTF, DOC, ODT, XLS, ODS
+and ODP with the installed LibreOffice; existing PPT checks passed. Poppler and
+Tesseract were absent on this machine, so successful OCR was tested with mocked
+tools, not real recognition. The full suite passed 133 tests with zero skipped;
+`npm run check` passed. Live Canvas permissions/downloads, live OpenAI quality,
+real OCR accuracy and visual browser QA remain unverified.
+
+## Optional email and deployment (existing functionality)
+
+## Daily Focus Mail
+
+Use **Daily Focus Mail** after Canvas is connected:
+
+1. Add your email.
+2. Choose a daily send time.
+3. Click **Schedule**.
+4. Click **Test Mail** to generate one immediately.
+
+If email sending is not configured, the app saves `.eml` drafts in `outbox/`.
+
+The daily email sends a **Canvas To Do** list plus **5 Canvas Tutor focus points** at your selected time. It includes upcoming Canvas items, course names, item types, due dates, Canvas links when available, what to start first, what to prepare next, and one end-of-day Canvas check.
+
+Use **Mail Status** to see whether the app is in real-email mode or draft-outbox mode, and to view recent saved drafts.
+
+To send real email, copy the example config:
+
+```bash
+cp .env.example .env
+```
+
+Then fill in either SMTP or Resend settings in `.env` and restart:
+
+```bash
+node server.js
+```
+
+SMTP example for Gmail:
+
+```text
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=465
+SMTP_SECURE=true
+SMTP_USER=your_email@gmail.com
+SMTP_PASS=your_gmail_app_password
+EMAIL_FROM="Canvas Tutor <your_email@gmail.com>"
+```
+
+Resend example:
+
+```text
+RESEND_API_KEY=re_your_key
+EMAIL_FROM="Canvas Tutor <you@your_verified_domain.com>"
+```
+
+Use **Mail Status** after restarting to confirm it says real email instead of draft outbox.
+
+The daily schedule runs only while `node server.js` is running.
+
+### Background Daily Email On Mac
+
+You can keep daily Canvas To Do emails running even when the browser tab is closed by installing the background mail agent:
+
+```bash
+./scripts/install-background-mail.sh
+```
+
+It starts the app in the background at:
+
+```text
+http://127.0.0.1:4200
+```
+
+The background agent starts when you log in and keeps the daily scheduler alive while your Mac is awake. If your Mac is asleep or powered off at the scheduled time, the local scheduler cannot send mail. For always-on mail, deploy the app to Render.
+
+To remove the background agent:
+
+```bash
+./scripts/uninstall-background-mail.sh
+```
+
+To temporarily test Canvas To Do email every 2 minutes:
+
+```bash
+node scripts/enable-two-minute-mail-test.js
+```
+
+When testing is done, restore the normal daily schedule:
+
+```bash
+node scripts/restore-daily-mail.js
+```
+
+## Deploy To Render
+
+This project includes `package.json` and `render.yaml` so Render can run it as a Node web service.
+
+Recommended Render settings:
+
+- Build command: `npm install`
+- Start command: `npm start`
+- Environment variable: `RESEND_API_KEY`
+- Environment variable: `EMAIL_FROM`
+- Environment variable: `CANVAS_BASE_URL`
+- Environment variable: `CANVAS_TOKEN`
+- Environment variable: `DIGEST_EMAIL`
+- Environment variable: `DIGEST_TIME` with value `07:30`
+- Optional environment variable: `DIGEST_PROFILE_NAME`
+
+For a personal always-on daily email, add your own Canvas token to Render environment variables. Do not commit it to GitHub. For a multi-student app, each student would need their own secure login/token flow instead of shared environment variables.
+
+Render note: Free web services can spin down after inactivity. For the most reliable scheduled email, use a paid always-on web service or a Render Cron Job/service design.
+
+This repo also includes a Render Cron command for daily email:
+
+```bash
+npm run send-digest
+```
+
+The `render.yaml` blueprint includes a cron service named `canvas-tutor-agent-daily-email`. Render cron schedules use UTC, so the included `30 11 * * *` schedule is 7:30 AM Eastern during daylight saving time. Adjust it in the Render dashboard if needed.
+
+## Free Cloud Daily Email With GitHub Actions
+
+For a no-cost setup that works even when your Mac is asleep, use the included GitHub Actions workflow:
+
+```text
+.github/workflows/daily-canvas-todo.yml
+```
+
+It runs `npm run send-digest` every day at `30 11 * * *`, which is 7:30 AM Eastern during daylight saving time. It can also be run manually from the GitHub **Actions** tab.
+
+Add these repository secrets in GitHub:
+
+- `RESEND_API_KEY`
+- `EMAIL_FROM`
+- `CANVAS_BASE_URL`
+- `CANVAS_TOKEN`
+- `DIGEST_EMAIL`
+- `DIGEST_PROFILE_NAME`
+
+GitHub Actions cron uses UTC, so adjust the cron time when daylight saving time changes if you want the email to stay exactly at 7:30 AM Eastern.
