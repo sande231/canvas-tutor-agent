@@ -1,7 +1,7 @@
 {
   "name": "canvas-tutor",
   "version": "1.0.0",
-  "description": "A personal Canvas LMS tutor agent for module study notes, flashcards, MCQ quizzes, assignment planning, and daily focus emails.",
+  "description": "Canvas Tutor turns your Canvas LMS course files into study guides, quizzes and flashcards with answers cited to real source passages.",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
